@@ -11,7 +11,7 @@ sys.path.insert(0, parent_dir)
 
 from core.utils import train_test_split, batch_split, plot_curves, \
                        save_restoration_grid, standard_normalization
-from core.losses import AbstractLoss, MSELoss, BCELoss
+from core.losses import AbstractLoss, MSELoss, BCELoss, L1Loss
 from core.optimizers import AbstractOptimizer, Adam
 from core.models import AbstractModel, VAEEncoder, Generator, Discriminator
 from core.data import Tensor
@@ -158,10 +158,10 @@ def test_fn(
 
 if __name__ == "__main__":
     # Init constants
-    Z_DIM = 64
-    TEST_SIZE = 0.3
+    Z_DIM = 128
+    TEST_SIZE = 0.15
     TEST_STEP = 4
-    EPOCHS = 40
+    EPOCHS = 100
     BATCH_SIZE = 64
     ENC_LR = 1e-4
     GEN_LR = 1e-4
@@ -205,6 +205,7 @@ if __name__ == "__main__":
     }
     losses = {
         "rec_loss": MSELoss(model = models["gen"]),
+        #"rec_loss": L1Loss(model = models["gen"]),
         "g_loss": BCELoss(model = models["disc"]), # since we calculate g_loss grad through disc
         "d_loss": BCELoss(model = models["disc"])
     }
