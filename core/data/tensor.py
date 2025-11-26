@@ -200,6 +200,9 @@ class Tensor:
     def __neg__(self)-> Tensor:
         return Tensor(-self.data, self.dtype, self.device)
 
+    def __abs__(self)-> Tensor:
+        return Tensor(abs(self.data), self.dtype, self.device)
+
     # ---------------------
     # Elementwise methods
     # ---------------------
