@@ -2,7 +2,10 @@ from .abstract_block import AbstractBlock
 from core.data import Tensor
 
 class BatchNorm2d(AbstractBlock):
-    """BatchNorm2d(x) = (x - mean_c) / sqrt(var_c + eps) * gamma_c + beta_c"""
+    """
+    Works per-channel using batch statistics
+    BatchNorm2d(x) = (x - mean_c) / sqrt(var_c + eps) * gamma_c + beta_c
+    """
 
     def __init__(
         self, 

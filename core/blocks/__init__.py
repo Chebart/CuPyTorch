@@ -13,8 +13,10 @@ from .avg_pool2d import AvgPool2D
 from .sigmoid import Sigmoid
 from .relu import ReLU
 from .relu_leaky import LeakyReLU
+from .gelu import GELU
 from .tanh import Tanh
 from .softmax import Softmax
 
 from .batch_norm2d import BatchNorm2d
+from .layer_norm import LayerNorm
 from .reshape import Reshape
