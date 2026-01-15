@@ -421,6 +421,15 @@ class Tensor:
         backend = Tensor.define_backend(device)
         return Tensor(backend.random.normal(mean, std, size = size), dtype, device)
 
+    @staticmethod
+    def rand(
+        shape: tuple,
+        dtype = "fp16", 
+        device: str = "cpu"
+    )-> Tensor:
+        backend = Tensor.define_backend(device)
+        return Tensor(backend.random.rand(*shape), dtype, device)
+
     # ---------------------
     # Data type conversion methods
     # ---------------------
@@ -430,6 +439,13 @@ class Tensor:
             return self.data.get()
         elif self.backend.__name__ == "numpy":
             return self.data
+
+    def astype(self, dtype = "fp16"):
+        if self.backend.__name__ == "cupy":
+            with self.device_context():
+                self.data = self.backend.asarray(self.data, dtype = dtype)
+        elif self.backend.__name__ == "numpy":
+            self.data = self.backend.array(self.data, dtype = dtype)
 
     # ---------------------
     # Representation methods

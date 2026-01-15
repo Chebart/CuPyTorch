@@ -22,6 +22,14 @@ class AbstractBlock(ABC):
             p = p.to_device(device)
             g = g.to_device(device)
 
+    def train(self):
+        """Prepare block for training"""
+        self.is_train = True
+
+    def eval(self):
+        """Prepare block for evaluation"""
+        self.is_train = False
+
     @abstractmethod
     def backward(self, dLdy: Tensor)-> Tensor:
         """Calculate backward pass"""

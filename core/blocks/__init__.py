@@ -20,3 +20,4 @@ from .softmax import Softmax
 from .batch_norm2d import BatchNorm2d
 from .layer_norm import LayerNorm
 from .reshape import Reshape
+from .dropout import Dropout
