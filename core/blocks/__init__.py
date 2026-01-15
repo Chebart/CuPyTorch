@@ -21,3 +21,8 @@ from .batch_norm2d import BatchNorm2d
 from .layer_norm import LayerNorm
 from .reshape import Reshape
 from .dropout import Dropout
+
+from .pos_enc import PositionalEncoding
+from .mha import MultiHeadAttention
+from .feed_forward import FeedForwardLayer
+from .transformer_encoder import TransformerEncoderLayer

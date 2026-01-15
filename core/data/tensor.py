@@ -222,6 +222,12 @@ class Tensor:
     def tanh(self)-> Tensor:
         return Tensor(self.backend.tanh(self.data), self.dtype, self.device)
 
+    def sin(self)-> Tensor:
+        return Tensor(self.backend.sin(self.data), self.dtype, self.device)
+    
+    def cos(self)-> Tensor:
+        return Tensor(self.backend.cos(self.data), self.dtype, self.device)
+
     # ---------------------
     # Views methods
     # ---------------------
@@ -429,6 +435,22 @@ class Tensor:
     )-> Tensor:
         backend = Tensor.define_backend(device)
         return Tensor(backend.random.rand(*shape), dtype, device)
+
+    @staticmethod
+    def arange(
+        start: float, 
+        stop: float = None, 
+        step: float = 1, 
+        dtype: str = "fp32", 
+        device: str = "cpu"
+    ) -> Tensor:
+        # set stop if needed
+        if stop is None:
+            stop = start
+            start = 0
+
+        backend = Tensor.define_backend(device)
+        return Tensor(backend.arange(start, stop, step), dtype=dtype, device=device)
 
     # ---------------------
     # Data type conversion methods
