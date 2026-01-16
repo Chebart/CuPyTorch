@@ -1,3 +1,4 @@
+from .rope import RotaryPositionalEmbeddings
 from .abstract_block import AbstractBlock
 from .softmax import Softmax
 from .linear import Linear
@@ -6,9 +7,11 @@ class MultiHeadAttention(AbstractBlock):
     """MultiHeadAttention(Q, K, V) = Concat(head_1, …, head_h) * W_O"""
 
     def __init__(
-        self, 
-        d_model: int, 
-        num_heads: int
+        self,
+        d_model: int,
+        num_heads: int,
+        use_rope: bool = False,
+        max_seq_len: int = 4096,
     ):
         # check that model dim can be split among heads
         assert d_model % num_heads == 0
@@ -18,6 +21,16 @@ class MultiHeadAttention(AbstractBlock):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
 
+        # RoPE flag
+        self.use_rope = use_rope
+        if use_rope:
+            self.rope = RotaryPositionalEmbeddings(
+                dim=self.d_k,
+                max_seq_len=max_seq_len,
+            )
+        else:
+            self.rope = None
+
         # Initialize needed components
         self.W_q = Linear(d_model, d_model)
         self.W_k = Linear(d_model, d_model)
@@ -26,16 +39,19 @@ class MultiHeadAttention(AbstractBlock):
         self.softmax = Softmax()
 
     def split_heads(self, x):
+        # Split last dim into (num_heads, head_dim)
         B, T, _ = x.shape
         return x.reshape(B, T, self.num_heads, self.d_k).transpose(0, 2, 1, 3)
 
     def combine_heads(self, x):
+        # Combine heads back
         B, H, T, D = x.shape
         return x.transpose(0, 2, 1, 3).reshape(B, T, H * D)
 
     def scaled_dot_product_attention(self, Q, K, V, mask=None):
         # Attention score computation and normalization
         scores = Q @ K.transpose(0, 1, 3, 2) / (self.d_k ** 0.5)
+
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
@@ -60,6 +76,19 @@ class MultiHeadAttention(AbstractBlock):
         Qh = self.split_heads(self.Q_lin)
         Kh = self.split_heads(self.K_lin)
         Vh = self.split_heads(self.V_lin)
+
+        # Apply rotary positional embeddings to Q and K
+        if self.use_rope:
+            # (B, H, T, D) -> (B, T, H, D)
+            Qh = Qh.transpose(0, 2, 1, 3)
+            Kh = Kh.transpose(0, 2, 1, 3)
+
+            Qh = self.rope(Qh)
+            Kh = self.rope(Kh)
+
+            # (B, T, H, D) -> (B, H, T, D)
+            Qh = Qh.transpose(0, 2, 1, 3)
+            Kh = Kh.transpose(0, 2, 1, 3)
 
         # Calculate scaled dot-product attention
         attn_out = self.scaled_dot_product_attention(Qh, Kh, Vh, mask)
@@ -91,7 +120,20 @@ class MultiHeadAttention(AbstractBlock):
         dQ = d_scores @ self.K
         dK = d_scores.transpose(0, 1, 3, 2) @ self.Q
 
-        # Merge heads and backprop
+        # Calculate RoPE grad
+        if self.use_rope:
+            # (B, H, T, D) -> (B, T, H, D)
+            dQ = dQ.transpose(0, 2, 1, 3)
+            dK = dK.transpose(0, 2, 1, 3)
+
+            dQ = self.rope.backward(dQ)
+            dK = self.rope.backward(dK)
+
+            # (B, T, H, D) -> (B, H, T, D)
+            dQ = dQ.transpose(0, 2, 1, 3)
+            dK = dK.transpose(0, 2, 1, 3)
+
+        # Merge heads and backprop through linear layers
         dQ = self.W_q.backward(self.combine_heads(dQ))
         dK = self.W_k.backward(self.combine_heads(dK))
         dV = self.W_v.backward(self.combine_heads(dV))
