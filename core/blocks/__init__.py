@@ -22,6 +22,7 @@ from .layer_norm import LayerNorm
 from .reshape import Reshape
 from .dropout import Dropout
 
+from .embedding import Embedding
 from .pos_enc import PositionalEncoding
 from .mha import MultiHeadAttention
 from .feed_forward import FeedForwardLayer

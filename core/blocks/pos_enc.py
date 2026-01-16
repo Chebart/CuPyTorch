@@ -10,6 +10,7 @@ class PositionalEncoding(AbstractBlock):
         max_seq_length: int,
         dtype: str = "fp32"
     ):
+        self.max_seq_len = max_seq_length
         # Create positional encodings
         pe = Tensor.zeros((max_seq_length, d_model), dtype = dtype)
         position = Tensor.arange(max_seq_length, dtype = dtype)[:, None]
@@ -24,6 +25,9 @@ class PositionalEncoding(AbstractBlock):
         self.pe = pe[None, :, :]
         
     def forward(self, x):
+        assert x.shape[1] <= self.max_seq_len, (
+            f"PE seq_len mismatch: seq_len={x.shape[1]}, max_seq_len={self.max_seq_len}"
+        )
         return x + self.pe[:, :x.shape[1], :].to_device(x.device)
 
     def parameters(self):
