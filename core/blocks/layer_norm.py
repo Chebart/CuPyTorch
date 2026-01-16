@@ -38,7 +38,7 @@ class LayerNorm(AbstractBlock):
         return self.x_scaled * g + b
         
     def parameters(self):
-        return [('b', self._g, self._dg), ('b', self._b, self._db)]
+        return [('norm', self._g, self._dg), ('norm', self._b, self._db)]
 
     def backward(self, dLdy):
         param_axes = (0,) + self.axes
