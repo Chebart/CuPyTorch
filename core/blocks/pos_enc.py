@@ -13,7 +13,8 @@ class PositionalEncoding(AbstractBlock):
         # Create positional encodings
         pe = Tensor.zeros((max_seq_length, d_model), dtype = dtype)
         position = Tensor.arange(max_seq_length, dtype = dtype)[:, None]
-        div_term = (Tensor.arange(0, d_model, 2) * -(Tensor(10000.0, dtype = dtype).log() / d_model)).exp()
+        div_term = (Tensor.arange(0, d_model, 2, dtype = dtype) * \
+                    -(Tensor(10000.0, dtype = dtype).log() / d_model)).exp()
 
         value = position * div_term
         pe[:, 0::2] = value.sin()
