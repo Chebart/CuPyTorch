@@ -16,10 +16,12 @@ class TransformerEncoderLayer(AbstractBlock):
         d_model: int, 
         num_heads: int, 
         d_ff: int, 
+        use_rope: bool = False,
+        max_seq_length: int = 512, 
         dropout: float = 0.1
     ):
         # Initialize needed components
-        self.self_attn = MultiHeadAttention(d_model, num_heads)
+        self.self_attn = MultiHeadAttention(d_model, num_heads, use_rope, max_seq_length)
         self.feed_forward = FeedForwardLayer(d_model, d_ff)
         self.norm1 = LayerNorm(d_model)
         self.dropout1 = Dropout(p = dropout)

@@ -11,7 +11,7 @@ class MultiHeadAttention(AbstractBlock):
         d_model: int,
         num_heads: int,
         use_rope: bool = False,
-        max_seq_len: int = 4096,
+        max_seq_len: int = 512,
     ):
         # check that model dim can be split among heads
         assert d_model % num_heads == 0
