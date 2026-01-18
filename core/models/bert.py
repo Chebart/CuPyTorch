@@ -1,4 +1,4 @@
-from ..blocks import Embedding, TransformerEncoderLayer, Linear, Dropout, LayerNorm, GELU
+from ..blocks import Embedding, TransformerEncoderLayer, Linear, Dropout, LayerNorm, GELU, Softmax
 from .abstract_model import AbstractModel
 from ..data import Tensor
 
@@ -97,6 +97,7 @@ class BERT(AbstractModel):
         ]
         self.mlm_head = MLMHead(d_model, vocab_size)
         self.classifier = BertClassifier(d_model)
+        self.softmax = Softmax()
         super().__init__()
 
     def set_task(self, task_name):
@@ -120,11 +121,13 @@ class BERT(AbstractModel):
         elif self.task == "cls":
             x = self.classifier(x)
 
-        return x
+        return self.softmax(x)
 
     def backward(self, dLdy):
         assert self.task is not None, "before call backward() set task for BERT"
 
+        dLdy = self.softmax.backward(dLdy)
+        
         if self.task == "mlm":
             dLdy = self.mlm_head.backward(dLdy)
         elif self.task == "cls":
