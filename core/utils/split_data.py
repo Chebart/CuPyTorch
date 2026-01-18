@@ -3,29 +3,68 @@ import numpy as np
 from core.data import Tensor
 
 def train_test_split(
-    X: Tensor, 
-    y: Tensor, 
-    test_size: float = 0.2, 
-    shuffle: bool = True, 
-    random_state: int = 42
-)-> tuple[Tensor, Tensor, Tensor, Tensor]:
+    X: Tensor,
+    y: Tensor,
+    test_size: float = 0.2,
+    shuffle: bool = True,
+    random_state: int = 42,
+    stratify: Tensor| None = None
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Split arrays into random train and test subsets"""
+
+    if stratify is not None and stratify.shape[0] != X.shape[0]:
+        raise ValueError("stratify must have the same length as X")
+
     # Get objects count
     n_samples = X.shape[0]
     # Handle test_size
     n_test = int(n_samples * test_size)
-    # Shuffle indices
-    indices = np.arange(n_samples)
-    if shuffle:
-        rng = np.random.default_rng(seed=random_state)
-        rng.shuffle(indices)
+    # Set random generator
+    rng = np.random.default_rng(seed=random_state)
 
-    # Split data
-    test_indices = indices[:n_test]
-    train_indices = indices[n_test:]
-    X_train, X_test = X[train_indices], X[test_indices]
-    y_train, y_test = y[train_indices], y[test_indices]
-    
+    # Stratified split
+    if stratify is not None:
+        stratify_np = stratify.to_numpy()
+        indices = np.arange(n_samples)
+
+        train_indices = []
+        test_indices = []
+
+        classes, class_counts = np.unique(stratify_np, return_counts=True)
+
+        for cls, cls_count in zip(classes, class_counts):
+            cls_indices = indices[stratify_np == cls]
+
+            if shuffle:
+                rng.shuffle(cls_indices)
+
+            cls_test_size = int(cls_count * test_size)
+
+            test_indices.extend(cls_indices[:cls_test_size])
+            train_indices.extend(cls_indices[cls_test_size:])
+
+        train_indices = np.array(train_indices)
+        test_indices = np.array(test_indices)
+
+        if shuffle:
+            rng.shuffle(train_indices)
+            rng.shuffle(test_indices)
+
+    # Normal split
+    else:
+        indices = np.arange(n_samples)
+
+        if shuffle:
+            rng.shuffle(indices)
+
+        test_indices = indices[:n_test]
+        train_indices = indices[n_test:]
+
+    X_train = X[train_indices]
+    X_test = X[test_indices]
+    y_train = y[train_indices]
+    y_test = y[test_indices]
+
     return X_train, X_test, y_train, y_test
 
 def create_sequences(
