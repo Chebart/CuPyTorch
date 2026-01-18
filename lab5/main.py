@@ -17,6 +17,7 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, parent_dir)
 
 from core.utils import train_test_split, batch_split, plot_curves
+from core.metrics import accuracy, precision, recall, f1
 from core.losses import AbstractLoss, CrossEntropyLoss
 from core.optimizers import AbstractOptimizer, Adam
 from core.models import AbstractModel, BERT
@@ -189,6 +190,7 @@ def split_pretrain_data(
     max_length: int,
     mlm_probability: float = 0.15,
     random_state: int = 42,
+    ignore_index: int = -100,
     dtype: str = "fp32",
     device: str = "cuda:0"
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -205,7 +207,8 @@ def split_pretrain_data(
     X_np, y_np = create_mlm_inputs_and_labels(
         input_ids = encodings["input_ids"],
         tokenizer = tokenizer,
-        mlm_probability = mlm_probability
+        mlm_probability = mlm_probability,
+        ignore_index = ignore_index
     )
     # Convert to Tensor
     X = Tensor(X_np, dtype = dtype, device = device)
@@ -254,148 +257,155 @@ def split_finetune_data(
 # Train/test methods
 # ----------------------
 
-def train_fn(
-    X_train: np.ndarray, 
-    y_train: np.ndarray,
-    models: dict[AbstractModel],
-    losses: dict[AbstractLoss],
-    optimizers: dict[AbstractOptimizer]
-)-> np.ndarray:
-    train_stats = {"g_loss": [], "d_loss": [], "rec_loss": [], "kl_loss": []}
-    for train_Xb, _ in batch_split(X_train, y_train, batch_size = BATCH_SIZE):
-        # -------------------------
-        # Train Discriminator
-        # -------------------------
-        real_preds = models["disc"](train_Xb)
-        real_targets = Tensor.ones(real_preds.shape, dtype = real_preds.dtype, device = real_preds.device)
-        loss_D_real = losses["d_loss"](real_preds, real_targets).mean().to_numpy()
-        losses["d_loss"].backward(real_preds, real_targets)
+def compute_metrics(
+    y_pred_np: np.ndarray, 
+    y_true_np: np.ndarray, 
+    task: str, 
+    ignore_index: int | None = None
+)-> dict:
+    
+    metrics = {}
+    if task == "mlm":
+        pred_ids = np.argmax(y_pred_np, axis=-1)
 
-        _, _, z = models["enc"](train_Xb)
-        fake = models["gen"](z)
-        fake_preds = models["disc"](fake)
-        fake_targets = Tensor.zeros(fake_preds.shape, dtype = fake_preds.dtype, device = fake_preds.device)
-        loss_D_fake = losses["d_loss"](fake_preds, fake_targets).mean().to_numpy()
-        losses["d_loss"].backward(fake_preds, fake_targets)
+        if ignore_index is not None:
+            mask = y_true_np != ignore_index
+            pred_ids = pred_ids[mask]
+            y_true_np = y_true_np[mask]
 
-        loss_D = loss_D_real + loss_D_fake
-        train_stats["d_loss"].append(loss_D)
-        optimizers["disc"].step()
-        optimizers["disc"].zero_grad()
+        if len(y_true_np) == 0:
+            metrics["token_acc"] = 0.0
+        else:
+            metrics["token_acc"] = (pred_ids == y_true_np).mean()
 
-        # -------------------------
-        # Train Encoder + Generator
-        # -------------------------
-        mu, logvar, z = models["enc"](train_Xb)
-        recon = models["gen"](z)
+    elif task == "classification":
+        num_cls = y_pred_np.shape[1]
+        pred_cls = np.argmax(y_pred_np, axis=1)
+        metrics["acc"] = accuracy(pred_cls, y_true_np, num_cls)
+        metrics["prec"] = precision(pred_cls, y_true_np, num_cls)
+        metrics["rec"] = recall(pred_cls, y_true_np, num_cls)
+        metrics["f1"] = f1(pred_cls, y_true_np, num_cls)
 
-        # Calculate reconstruction loss
-        rec_loss = losses["rec_loss"](recon, train_Xb).mean().to_numpy()
-        train_stats["rec_loss"].append(rec_loss)
-        dLdz_rec = losses["rec_loss"].backward(recon, train_Xb) # get rec_loss derivative from generator
+    return metrics
 
-        # Calculate generator loss
-        preds = models["disc"](recon)
-        targets = Tensor.ones(preds.shape, dtype = preds.dtype, device = preds.device)
-        loss_G = losses["g_loss"](preds, targets).mean().to_numpy()
-        train_stats["g_loss"].append(loss_G)
-        dLdx_fake = losses["g_loss"].backward(preds, targets) # get g_loss derivative through discriminator
-        dLdz_gen = models["gen"].backward(dLdx_fake) # get g_loss derivative from generator
+def run_epoch(
+    X: Tensor, 
+    y: Tensor, 
+    model: AbstractModel, 
+    loss_fn: AbstractLoss, 
+    optimizer: AbstractOptimizer,
+    task: str,
+    batch_size: int = 32,
+    train: bool = True,
+    ignore_index: int | None = None
+):
+    stats = {}
+    for Xb, yb in batch_split(X, y, batch_size=batch_size):
+        # Do forward pass
+        y_pred = model(Xb, task=task)
 
-        # Calculate KL loss
-        kl_loss = -0.5 * (1 + logvar - mu**2 - logvar.exp()).mean().to_numpy()
-        train_stats["kl_loss"].append(kl_loss)
+        # Calculate loss
+        loss = loss_fn(y_pred, yb).mean()
+        loss_val = loss.to_numpy()
 
-        # Use combined derivative for encoder
-        norm = mu.shape[0] * mu.shape[1]
-        dKL_dmu = mu / norm
-        dKL_dlogvar = 0.5 * (logvar.exp() - 1) / norm
-        dLdz_gen_dmu = dLdz_gen
-        dLdz_gen_dlogvar = dLdz_gen * models["enc"].eps * 0.5 * models["enc"].std
-        dLdz_rec_dmu = dLdz_rec
-        dLdz_rec_dlogvar = dLdz_rec * models["enc"].eps * 0.5 * models["enc"].std
+        stats.setdefault("loss", []).append(loss_val)
 
-        dmu_total = dLdz_gen_dmu + dKL_dmu + dLdz_rec_dmu
-        dsigma_total = dLdz_gen_dlogvar + dKL_dlogvar + dLdz_rec_dlogvar
-        d_encoder_out = Tensor.concat(
-            [dmu_total, dsigma_total], 
-            axis = 1, 
-            dtype = dmu_total.dtype, 
-            device = dmu_total.device
+        if train:
+            loss_fn.backward(y_pred, yb)
+            optimizer.step()
+            optimizer.zero_grad()
+
+        # Calculate metrics
+        y_pred_np = y_pred.to_numpy()
+        yb_np = yb.to_numpy()
+
+        batch_metrics = compute_metrics(
+            y_pred_np, yb_np, task, ignore_index
         )
-        models["enc"].backward(d_encoder_out)
 
-        optimizers["enc"].step()
-        optimizers["gen"].step()
-        optimizers["enc"].zero_grad()
-        optimizers["gen"].zero_grad()
-        optimizers["disc"].zero_grad()
+        for k, v in batch_metrics.items():
+            stats.setdefault(k, []).append(v)
 
-    logging.info(f"train g_loss: {np.array(train_stats['g_loss']).mean()}")
-    logging.info(f"train d_loss: {np.array(train_stats['d_loss']).mean()}")
-    logging.info(f"train rec_loss: {np.array(train_stats['rec_loss']).mean()}")
-    logging.info(f"train kl_loss: {np.array(train_stats['kl_loss']).mean()}")
+    # Calculate mean over batches
+    for k in stats:
+        stats[k] = float(np.mean(stats[k]))
 
-    return train_stats
+    return stats
 
-def test_fn(
-    X_test: np.ndarray, 
-    y_test: np.ndarray,
-    models: list[AbstractModel],
-    losses: list[AbstractLoss]
-)-> np.ndarray:
-    test_stats = {"g_loss": [], "d_loss": [], "rec_loss": [], "kl_loss": []}
-    for batch_idx, (test_Xb, _) in enumerate(batch_split(X_test, y_test, batch_size = BATCH_SIZE)): 
-        # -------------------------
-        # Test Discriminator
-        # -------------------------
-        real_preds = models["disc"](test_Xb)
-        real_targets = Tensor.ones(real_preds.shape, dtype = real_preds.dtype, device = real_preds.device)
-        loss_D_real = losses["d_loss"](real_preds, real_targets).mean().to_numpy()
+def start_train_test_pipeline(
+    X_train: Tensor, 
+    X_test: Tensor,
+    y_train: Tensor, 
+    y_test: Tensor,
+    model: AbstractModel,
+    task: str,
+    loss_fn: AbstractLoss,
+    optimizer: AbstractOptimizer,
+    epochs: int,
+    batch_size: int,
+    test_step: int,
+    results_path: str,
+    ignore_index: int | None = None
+):
 
-        _, _, z = models["enc"](test_Xb)
-        fake = models["gen"](z)
-        fake_preds = models["disc"](fake)
-        fake_targets = Tensor.zeros(fake_preds.shape, dtype = fake_preds.dtype, device = fake_preds.device)
-        loss_D_fake = losses["d_loss"](fake_preds, fake_targets).mean().to_numpy()
+    train_hist = {}
+    test_hist = {}
+    for epoch in range(epochs):
+        logging.info(f"Epoch {epoch + 1}/{epochs}")
 
-        loss_D = loss_D_real + loss_D_fake
-        test_stats["d_loss"].append(loss_D)
+        # train
+        train_stats = run_epoch(
+            X_train, 
+            y_train,
+            model, 
+            loss_fn, 
+            optimizer,
+            task = task,
+            batch_size = batch_size,
+            train = True,
+            ignore_index = ignore_index
+        )
 
-        # -------------------------
-        # Test Encoder + Generator
-        # -------------------------
-        mu, logvar, z = models["enc"](test_Xb)
-        recon = models["gen"](z)
+        for k, v in train_stats.items():
+            train_hist.setdefault(k, []).append(v)
 
-        # Calculate losses
-        rec_loss = losses["rec_loss"](recon, test_Xb).mean().to_numpy()
-        test_stats["rec_loss"].append(rec_loss)
+        # test
+        if (epoch + 1) % test_step == 0:
+            test_stats = run_epoch(
+                X_test, 
+                y_test,
+                model, 
+                loss_fn,
+                optimizer = None,
+                task = task,
+                batch_size = batch_size,
+                train = False,
+                ignore_index = ignore_index
+            )
 
-        kl_loss = -0.5 * (1 + logvar - mu**2 - logvar.exp()).mean().to_numpy()
-        test_stats["kl_loss"].append(kl_loss)
+            for k, v in test_stats.items():
+                test_hist.setdefault(k, []).append(v)
 
-        preds = models["disc"](recon)
-        targets = Tensor.ones(preds.shape, dtype = preds.dtype, device = preds.device)
-        loss_G = losses["g_loss"](preds, targets).mean().to_numpy()
-        test_stats["g_loss"].append(loss_G)
+        # draw plots
+        for k in train_hist:
+            plot_curves(
+                np.arange(len(train_hist[k])),
+                train_hist[k],
+                f"Train {k}",
+                "epochs",
+                k,
+                f"{results_path}/train_{k}_{task}.png"
+            )
 
-        # -------------------------
-        # Save restored images
-        # -------------------------
-        recon = recon.to_numpy()
-        test_Xb  = test_Xb.to_numpy()
-        save_restoration_grid(recon, test_Xb, save_path = f"{results_path}/gen_res/test_batch_{batch_idx}.png")
-
-    logging.info(f"test g_loss: {np.array(test_stats['g_loss']).mean()}")
-    logging.info(f"test d_loss: {np.array(test_stats['d_loss']).mean()}")
-    logging.info(f"test rec_loss: {np.array(test_stats['rec_loss']).mean()}")
-    logging.info(f"test kl_loss: {np.array(test_stats['kl_loss']).mean()}")
-
-    return test_stats
-
-def train_test_pipeline():
-    ...
+        for k in test_hist:
+            plot_curves(
+                np.arange(len(test_hist[k])),
+                test_hist[k],
+                f"Test {k}",
+                "epochs",
+                k,
+                f"{results_path}/test_{k}_{task}.png"
+            )
 
 if __name__ == "__main__":
     # Create needed directories
@@ -423,7 +433,7 @@ if __name__ == "__main__":
     MODEL_NAME = "cointegrated/rubert-tiny2"
     N_ROWS = 1000
     MLM_PROB = 0.15
-
+    IGNORE_INDEX = -100
     TEST_SIZE = 0.2
     TEST_STEP = 2
     DROPOUT = 0.1
@@ -448,11 +458,12 @@ if __name__ == "__main__":
         use_rope = False,
         max_seq_length = tokenizer.model_max_length,
         dropout = DROPOUT
-    ).to_device(DEVICE)
-    loss_fn = CrossEntropyLoss(model = model)
+    )
+    model = model.to_device(DEVICE)
+    loss_fn = CrossEntropyLoss(model = model, ignore_index = IGNORE_INDEX)
     optimizer = Adam(model = model, lr = LR, reg_type = "l2")
 
-    # Get finetune data
+    # Pretrain BERT
     X_train, X_test, y_train, y_test = split_pretrain_data(
         data_path = pt_dataset_path,
         tokenizer = tokenizer,
@@ -461,6 +472,42 @@ if __name__ == "__main__":
         max_length = tokenizer.model_max_length,
         mlm_probability = MLM_PROB,
         random_state = SEED,
+        ignore_index = IGNORE_INDEX,
         dtype = DTYPE,
         device = DEVICE
+    )
+    start_train_test_pipeline(
+        X_train, X_test,
+        y_train, y_test,
+        model,
+        task = "mlm",
+        loss_fn = loss_fn,
+        optimizer = optimizer,
+        epochs = PRETRAIN_EPOCHS,
+        batch_size = BATCH_SIZE,
+        test_step = 2,
+        results_path = f"{BASE_PATH}/results",
+        ignore_index = IGNORE_INDEX
+    )
+    exit()
+
+    # Finetune BERT
+    X_train, X_test, y_train, y_test = split_finetune_data(
+        data_path = pt_dataset_path,
+        test_size = TEST_SIZE,
+        random_state = SEED,
+        dtype = DTYPE,
+        device = DEVICE
+    )
+    start_train_test_pipeline(
+        X_train, X_test,
+        y_train, y_test,
+        model,
+        task="classification",
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        epochs = FINETUNE_EPOCHS,
+        batch_size = BATCH_SIZE,
+        test_step = 2,
+        results_path=results_path
     )
