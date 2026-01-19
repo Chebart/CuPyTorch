@@ -232,22 +232,68 @@ class Tensor:
     # Views methods
     # ---------------------
 
-    def __getitem__(self, index)-> Tensor:
-        if isinstance(index, Tensor):
-            with index.device_context():
-                index = index.data.astype(int)
-
+    def __getitem__(self, index) -> Tensor:
         with self.device_context():
-            return Tensor(self.data[index], self.dtype, self.device)
-    
-    def __setitem__(self, index, value):
-        if isinstance(index, Tensor):
-            index = index.data.astype(int)
-                
-        if isinstance(value, Tensor):
-            value = value.data
+            # Handle multi-axis indexing
+            if isinstance(index, tuple):
+                processed_index = []
+                for idx in index:
+                    if isinstance(idx, Tensor):
+                        idx_data = idx.data
+                        if idx_data.dtype == self.backend.bool_:
+                            processed_index.append(idx_data)
+                        else:
+                            processed_index.append(idx_data.astype(int))
+                    else:
+                        processed_index.append(idx)
 
-        self.data[index] = value
+                data_indexed = self.data[tuple(processed_index)]
+
+            # Handle single Tensor index
+            elif isinstance(index, Tensor):
+                index_data = index.data
+                if index_data.dtype == self.backend.bool_:
+                    data_indexed = self.data[index_data]
+                else:
+                    data_indexed = self.data[index_data.astype(int)]
+
+            # Handle normal Python indexing
+            else:
+                data_indexed = self.data[index]
+
+            return Tensor(data_indexed, dtype=self.dtype, device=self.device)
+
+    def __setitem__(self, index, value):
+        with self.device_context():
+            if isinstance(value, Tensor):
+                value = value.data
+
+            # Handle multi-axis indexing
+            if isinstance(index, tuple):
+                processed_index = []
+                for idx in index:
+                    if isinstance(idx, Tensor):
+                        idx_data = idx.data
+                        if idx_data.dtype == self.backend.bool_:
+                            processed_index.append(idx_data)
+                        else:
+                            processed_index.append(idx_data.astype(int))
+                    else:
+                        processed_index.append(idx)
+
+                self._data[tuple(processed_index)] = value
+
+            # Handle single Tensor index
+            elif isinstance(index, Tensor):
+                idx_data = index.data
+                if idx_data.dtype == self.backend.bool_:
+                    self.data[idx_data] = value
+                else:
+                    self.data[idx_data.astype(int)] = value
+
+            # Handle normal Python indexing
+            else:
+                self.data[index] = value
 
     def reshape(self, *shape)-> Tensor:
         return Tensor(self.data.reshape(*shape), self.dtype, self.device)
@@ -299,6 +345,12 @@ class Tensor:
     def fill(self, value: int):
         self.data.fill(value)
         return self
+
+    def masked_fill(self, mask, value):
+        if isinstance(mask, Tensor):
+            mask = mask.data.astype(bool)
+        out = self.backend.where(mask, value, self.data)
+        return Tensor(out, dtype = self.dtype, device = self.device)
     
     def clone(self)-> Tensor:
         return Tensor(self.data.copy(), self.dtype, self.device)
@@ -452,6 +504,17 @@ class Tensor:
         backend = Tensor.define_backend(device)
         return Tensor(backend.arange(start, stop, step), dtype=dtype, device=device)
 
+    @staticmethod
+    def einsum(
+        subscripts: str,
+        *operands: Tensor,
+        dtype: str = "fp32", 
+        device: str = "cpu"
+    ) -> Tensor:
+        backend = Tensor.define_backend(device)
+        arrays = [op.data for op in operands]
+        return Tensor(backend.einsum(subscripts, *arrays), dtype, device)
+
     # ---------------------
     # Data type conversion methods
     # ---------------------
@@ -463,11 +526,15 @@ class Tensor:
             return self.data
 
     def astype(self, dtype = "fp16"):
+        backend_dtype = Tensor.get_backend_dtype(self.backend, dtype)
+        self._dtype = dtype
         if self.backend.__name__ == "cupy":
             with self.device_context():
-                self.data = self.backend.asarray(self.data, dtype = dtype)
+                self._data = self.backend.asarray(self.data, dtype = backend_dtype)
         elif self.backend.__name__ == "numpy":
-            self.data = self.backend.array(self.data, dtype = dtype)
+            self._data = self.backend.array(self.data, dtype = backend_dtype)
+
+        return self
 
     # ---------------------
     # Representation methods
