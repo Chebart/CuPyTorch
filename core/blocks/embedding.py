@@ -17,14 +17,14 @@ class Embedding(AbstractBlock):
                 f"weights must have shape ({vocab_size}, {embedding_dim})"
             self._embeddings = weights
         else:
-            self._embeddings = Tensor.rand((vocab_size, embedding_dim), dtype=dtype)
+            self._embeddings = Tensor.rand((vocab_size, embedding_dim), dtype = dtype)
 
-        self._dembeddings = Tensor.zeros(self._embeddings.shape, dtype=dtype)
+        self._dembeddings = Tensor.zeros(self._embeddings.shape, dtype = dtype)
 
     def forward(self, x):
         self.x = x
         out = Tensor.zeros(
-            (len(x), self._embeddings.shape[1]),
+            (*x.shape, self._embeddings.shape[1]),
             dtype = x.dtype,
             device = x.device
         )
