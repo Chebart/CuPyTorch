@@ -15,6 +15,11 @@ class LayerNorm(AbstractBlock):
         eps: float = 1e-5,
         dtype: str = "fp32"
     ):
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        else:
+            normalized_shape = tuple(normalized_shape)
+
         self.normalized_shape = tuple(normalized_shape)
         self.eps = eps
         self.axes = tuple(range(-len(self.normalized_shape), 0))
@@ -41,7 +46,7 @@ class LayerNorm(AbstractBlock):
         return [('norm', self._g, self._dg), ('norm', self._b, self._db)]
 
     def backward(self, dLdy):
-        param_axes = (0,) + self.axes
+        param_axes = tuple(i for i in range(dLdy.data.ndim) if i not in self.axes)
         M = prod(self.normalized_shape)
 
         self._db += dLdy.sum(axis=param_axes)
