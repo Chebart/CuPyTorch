@@ -56,7 +56,7 @@ class MultiHeadAttention(AbstractBlock):
             scores = scores.masked_fill(mask == 0, -1e9)
 
         # Get attention probabilities
-        probs = self.softmax(scores, dim=-1)
+        probs = self.softmax(scores)
 
         # Cache tensors
         self.attn_probs = probs
