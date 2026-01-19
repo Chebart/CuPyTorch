@@ -7,25 +7,59 @@ CuPyTorch is a collection of laboratory works for the ITMO University course "Fu
 - The internal components of optimization algorithms  
 - How object-oriented programming (OOP) in Python supports abstraction for CPU/GPU computation
 
----
-
 ## Installation
 
 1. Install CUDA Toolkit from the [source](https://developer.nvidia.com/cuda-toolkit).
 
-2. Install Python dependencies:  
-   ```bash
-   numpy==2.3.4
-   pandas==2.3.2
-   matplotlib==3.10.6
-   ucimlrepo==0.0.7
-   scikit-learn==1.7.2
-   --pre
-   -f https://pip.cupy.dev/pre
-   cupy-cuda12x==14.0.0a1
-   ```
+2. Install Python 3.12.3
 
----
+3. Install Python dependencies:  
+```bash
+# Pytorch
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1
+
+# CuPy
+--pre
+-f https://pip.cupy.dev/pre
+cupy-cuda12x==14.0.0a1
+
+--extra-index-url https://pypi.org/simple
+
+# Repo dependencies
+numpy==1.26.4
+pandas==2.2.2
+matplotlib==3.9.2
+ucimlrepo==0.0.7
+scikit-learn==1.7.2
+python-dotenv==1.0.1
+kaggle==1.8.3
+
+# Rulm dependencies
+scipy==1.12.0
+transformers==4.44.2
+datasets==2.20.0
+sentencepiece==0.2.1
+fasttext-wheel==0.9.2
+pillow==10.4.0
+jsonlines==4.0.0
+datasketch==1.6.5
+nltk==3.9.1
+fire==0.7.1
+wandb==0.17.7
+openai==1.45.0
+pytest==9.0.2
+corus==0.10.0
+razdel==0.5.0
+zstandard==0.25.0
+pysimdjson==7.0.2
+```
+
+4. Set up .env file
+```bash
+KAGGLE_USERNAME=
+KAGGLE_KEY=
+```
 
 ## Project Structure
 
@@ -43,10 +77,9 @@ CuPyTorch is a collection of laboratory works for the ITMO University course "Fu
 ├── lab1             # MLP training
 ├── lab2             # LeNet-5 training
 ├── lab3             # RNN/LSTM/GRU training
-└── lab4             # VAE-GAN training
+├── lab4             # VAE-GAN training
+└── lab5             # BERT pre-training and finetuning
 ```
-
----
 
 ## Usage Example
 
