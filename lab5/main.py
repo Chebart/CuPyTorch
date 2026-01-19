@@ -3,6 +3,7 @@ import urllib.request
 import subprocess
 import logging
 import zipfile
+import shutil
 import random
 import json
 import sys
@@ -10,6 +11,7 @@ import os
 
 from transformers import AutoTokenizer, AutoConfig
 from dotenv import load_dotenv
+from tqdm import tqdm
 import pandas as pd
 import numpy as np
 
@@ -30,6 +32,20 @@ OUTPUT_DIR = f"{BASE_PATH}/data"
 # ----------------------
 # Get data
 # ----------------------
+
+def progress_hook(
+    block_num: int,
+    block_size: int,
+    total_size: int,
+):
+    downloaded = block_num * block_size
+    if total_size > 0:
+        percent = downloaded * 100 / total_size
+        sys.stdout.write(
+            f"\rDownloaded: {downloaded / 1024 / 1024:.2f} MB "
+            f"({percent:.2f}%)"
+        )
+        sys.stdout.flush()
 
 def get_pretrain_data():
     # Init data constants
@@ -53,7 +69,7 @@ def get_pretrain_data():
     # Download dataset
     if not os.path.exists(WIKI_DUMP_PATH):
         logging.info("Downloading Wikipedia dump...")
-        urllib.request.urlretrieve(WIKI_DUMP_URL, WIKI_DUMP_PATH)
+        urllib.request.urlretrieve(WIKI_DUMP_URL, WIKI_DUMP_PATH, reporthook = progress_hook)
     else:
         logging.info("Wikipedia dump already exists, skipping download.")
 
@@ -191,8 +207,7 @@ def split_pretrain_data(
     mlm_probability: float = 0.15,
     random_state: int = 42,
     ignore_index: int = -100,
-    dtype: str = "fp32",
-    device: str = "cuda:0"
+    dtype: str = "fp32"
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     
     # Read needed N rows from file
@@ -211,8 +226,8 @@ def split_pretrain_data(
         ignore_index = ignore_index
     )
     # Convert to Tensor
-    X = Tensor(X_np, dtype = dtype, device = device)
-    y = Tensor(y_np, dtype = dtype, device = device)
+    X = Tensor(X_np, dtype = dtype)
+    y = Tensor(y_np, dtype = dtype)
 
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
@@ -229,8 +244,7 @@ def split_finetune_data(
     data_path: str,
     test_size: float,
     random_state: int = 42,
-    dtype: str = "fp32",
-    device: str = "cuda:0"
+    dtype: str = "fp32"
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
 
     # Read data
@@ -239,8 +253,8 @@ def split_finetune_data(
     df["toxic"] = df["toxic"].astype(int)
 
     # Convert to Tensor
-    X = Tensor(df["comment"].to_numpy(), dtype = dtype, device = device)
-    y = Tensor(df["toxic"].to_numpy(), dtype = dtype, device = device)
+    X = Tensor(df["comment"].to_numpy(), dtype = dtype)
+    y = Tensor(df["toxic"].to_numpy(), dtype = dtype)
 
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
@@ -297,12 +311,19 @@ def run_epoch(
     task: str,
     batch_size: int = 32,
     train: bool = True,
+    device: str = "cuda:0",
     ignore_index: int | None = None
 ):
     stats = {}
-    for Xb, yb in batch_split(X, y, batch_size=batch_size):
+    for Xb, yb in tqdm(batch_split(X, y, batch_size=batch_size),
+                       total=(len(X) + batch_size - 1) // batch_size,
+                       desc="Training batches" if train else "Validation batches"):
+        # Send data to device
+        Xb = Xb.to_device(device)
+        yb = yb.to_device(device)
+
         # Do forward pass
-        y_pred = model(Xb, task=task)
+        y_pred = model(Xb)
 
         # Calculate loss
         loss = loss_fn(y_pred, yb).mean()
@@ -345,8 +366,11 @@ def start_train_test_pipeline(
     batch_size: int,
     test_step: int,
     results_path: str,
+    device: str = "cuda:0",
     ignore_index: int | None = None
 ):
+    # set task for model
+    model.set_task(task_name = task)
 
     train_hist = {}
     test_hist = {}
@@ -363,6 +387,7 @@ def start_train_test_pipeline(
             task = task,
             batch_size = batch_size,
             train = True,
+            device = device,
             ignore_index = ignore_index
         )
 
@@ -380,6 +405,7 @@ def start_train_test_pipeline(
                 task = task,
                 batch_size = batch_size,
                 train = False,
+                device = device,
                 ignore_index = ignore_index
             )
 
@@ -408,6 +434,10 @@ def start_train_test_pipeline(
             )
 
 if __name__ == "__main__":
+    # Delete result directory
+    if os.path.exists(f"{BASE_PATH}/results"):
+        shutil.rmtree(f"{BASE_PATH}/results")
+
     # Create needed directories
     directories = ["data", "results"]
     for directory in directories:
@@ -431,22 +461,25 @@ if __name__ == "__main__":
     np.random.seed(SEED)
     TOKENIZER_NAME = "cointegrated/rubert-tiny2"
     MODEL_NAME = "cointegrated/rubert-tiny2"
-    N_ROWS = 1000
+    N_ROWS = 10000
     MLM_PROB = 0.15
     IGNORE_INDEX = -100
     TEST_SIZE = 0.2
     TEST_STEP = 2
     DROPOUT = 0.1
-    PRETRAIN_EPOCHS = 20
-    FINETUNE_EPOCHS = 10
-    BATCH_SIZE = 64
+    PRETRAIN_EPOCHS = 2
+    FINETUNE_EPOCHS = 2
+    BATCH_SIZE = 8
     LR = 1e-4
     DEVICE = "cuda:0"
     DTYPE = "fp32"
 
     # Load HF models
-    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, clean_up_tokenization_spaces = False)
     config = AutoConfig.from_pretrained(MODEL_NAME)
+
+    # Set maximum seq_length
+    MAX_SEQ_LENGTH = tokenizer.model_max_length // 4
 
     # init parts
     model = BERT(
@@ -456,7 +489,7 @@ if __name__ == "__main__":
         num_layers = config.num_hidden_layers,
         d_ff = config.intermediate_size,
         use_rope = False,
-        max_seq_length = tokenizer.model_max_length,
+        max_seq_length = MAX_SEQ_LENGTH,
         dropout = DROPOUT
     )
     model = model.to_device(DEVICE)
@@ -469,24 +502,26 @@ if __name__ == "__main__":
         tokenizer = tokenizer,
         test_size = TEST_SIZE,
         max_rows = N_ROWS,
-        max_length = tokenizer.model_max_length,
+        max_length = MAX_SEQ_LENGTH,
         mlm_probability = MLM_PROB,
         random_state = SEED,
         ignore_index = IGNORE_INDEX,
-        dtype = DTYPE,
-        device = DEVICE
-    )
+        dtype = DTYPE
+    ) 
     start_train_test_pipeline(
-        X_train, X_test,
-        y_train, y_test,
+        X_train, 
+        X_test,
+        y_train, 
+        y_test,
         model,
         task = "mlm",
         loss_fn = loss_fn,
         optimizer = optimizer,
         epochs = PRETRAIN_EPOCHS,
         batch_size = BATCH_SIZE,
-        test_step = 2,
+        test_step = TEST_STEP,
         results_path = f"{BASE_PATH}/results",
+        device = DEVICE,
         ignore_index = IGNORE_INDEX
     )
     exit()
@@ -496,18 +531,20 @@ if __name__ == "__main__":
         data_path = pt_dataset_path,
         test_size = TEST_SIZE,
         random_state = SEED,
-        dtype = DTYPE,
-        device = DEVICE
+        dtype = DTYPE
     )
     start_train_test_pipeline(
-        X_train, X_test,
-        y_train, y_test,
+        X_train, 
+        X_test,
+        y_train, 
+        y_test,
         model,
-        task="classification",
-        loss_fn=loss_fn,
-        optimizer=optimizer,
+        task = "classification",
+        loss_fn = loss_fn,
+        optimizer = optimizer,
         epochs = FINETUNE_EPOCHS,
         batch_size = BATCH_SIZE,
-        test_step = 2,
-        results_path=results_path
+        test_step = TEST_STEP,
+        results_path = f"{BASE_PATH}/results",
+        device = DEVICE
     )
