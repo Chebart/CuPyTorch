@@ -30,8 +30,15 @@ class Linear(AbstractBlock):
         else:
             return [('w', self._w, self._dw)]
         
-    def backward(self, dLdy):
-        self._dw += dLdy.T @ self.x
-        self._db += dLdy.sum(axis=0)
-        dLdx = dLdy @ self._w
+    def backward(self, dLdy: Tensor):
+        self._db += dLdy.sum(axis = tuple(range(dLdy.data.ndim - 1)))
+        if dLdy.data.ndim == 2:
+            self._dw += dLdy.T @ self.x
+            dLdx = dLdy @ self._w
+        elif dLdy.data.ndim == 3:
+            self._dw += Tensor.einsum("bte,btd->ed", dLdy, self.x, dtype = dLdy.dtype, device = dLdy.device)
+            dLdx = Tensor.einsum("bte,ed->btd", dLdy, self._w, dtype = dLdy.dtype, device = dLdy.device)
+        else:
+            raise ValueError(f"Unsupported dLdy shape: {dLdy.data.shape}")
+
         return dLdx
