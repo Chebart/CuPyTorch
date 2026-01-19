@@ -13,7 +13,7 @@ class Dropout(AbstractBlock):
 
     def forward(self, x):
         if self.is_train:
-            self.mask = (Tensor.rand(x.shape, dtype=x.dtype, device=x.device) >= self.p).astype(x.dtype)
+            self.mask = (Tensor.rand(x.shape, dtype = x.dtype, device = x.device) >= self.p).astype(x.dtype)
             self.mask /= (1.0 - self.p)
             return x * self.mask
         else:
