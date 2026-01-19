@@ -130,22 +130,6 @@ def get_finetune_data():
 # Split data
 # ----------------------
 
-def read_jsonl_by_rows(
-    file_path: str,
-    max_rows: int
-) -> list[str]:
-    
-    # Get needed N rows from file
-    texts = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i >= max_rows:
-                break
-            obj = json.loads(line)
-            texts.append(obj["text"])
-
-    return texts
-
 def tokenize_input(
     texts: list[str],
     tokenizer,
@@ -161,6 +145,24 @@ def tokenize_input(
         return_special_tokens_mask = True,
         return_tensors = "np"
     )
+
+def read_jsonl_by_rows_and_tokenize(
+    file_path: str,
+    tokenizer: Any,
+    max_rows: int,
+    max_length: int = 128
+) -> np.ndarray:
+
+    # Get needed N rows from file
+    texts = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(tqdm(f, total = int(max_rows), desc = "Read pretrain data")):
+            if i >= max_rows:
+                break
+            obj = json.loads(line)
+            texts.append(tokenize_input([obj["text"]], tokenizer, max_length)["input_ids"][0])
+
+    return np.stack(texts, axis=0)
 
 def create_mlm_inputs_and_labels(
     input_ids: np.ndarray,
@@ -211,16 +213,16 @@ def split_pretrain_data(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     
     # Read needed N rows from file
-    texts = read_jsonl_by_rows(
+    texts = read_jsonl_by_rows_and_tokenize(
         file_path = data_path,
-        max_rows = max_rows
+        tokenizer = tokenizer,
+        max_rows = max_rows,
+        max_length = max_length
     )
-    # Tokenize text
-    encodings = tokenize_input(texts, tokenizer, max_length = max_length)
 
     # Process text into X and y
     X_np, y_np = create_mlm_inputs_and_labels(
-        input_ids = encodings["input_ids"],
+        input_ids = texts,
         tokenizer = tokenizer,
         mlm_probability = mlm_probability,
         ignore_index = ignore_index
@@ -242,7 +244,9 @@ def split_pretrain_data(
 
 def split_finetune_data(
     data_path: str,
+    tokenizer: Any,
     test_size: float,
+    max_length: int = 128,
     random_state: int = 42,
     dtype: str = "fp32"
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -252,8 +256,15 @@ def split_finetune_data(
     df = df[["comment", "toxic"]]
     df["toxic"] = df["toxic"].astype(int)
 
+    # Tokenize comments
+    encodings = tokenize_input(
+        texts = df["comment"].tolist(),
+        tokenizer = tokenizer,
+        max_length = max_length
+    )
+
     # Convert to Tensor
-    X = Tensor(df["comment"].to_numpy(), dtype = dtype)
+    X = Tensor(encodings["input_ids"], dtype = dtype)
     y = Tensor(df["toxic"].to_numpy(), dtype = dtype)
 
     # Split data
@@ -351,6 +362,8 @@ def run_epoch(
     for k in stats:
         stats[k] = float(np.mean(stats[k]))
 
+    logging.info(f"{'Train' if train else 'Test'} loss: {stats['loss']}")
+
     return stats
 
 def start_train_test_pipeline(
@@ -371,6 +384,7 @@ def start_train_test_pipeline(
 ):
     # set task for model
     model.set_task(task_name = task)
+    logging.info(f"{task} task:")
 
     train_hist = {}
     test_hist = {}
@@ -461,15 +475,15 @@ if __name__ == "__main__":
     np.random.seed(SEED)
     TOKENIZER_NAME = "cointegrated/rubert-tiny2"
     MODEL_NAME = "cointegrated/rubert-tiny2"
-    N_ROWS = 10000
+    N_ROWS = 2*1e5
     MLM_PROB = 0.15
     IGNORE_INDEX = -100
     TEST_SIZE = 0.2
     TEST_STEP = 2
     DROPOUT = 0.1
-    PRETRAIN_EPOCHS = 2
-    FINETUNE_EPOCHS = 2
-    BATCH_SIZE = 8
+    PRETRAIN_EPOCHS = 100
+    FINETUNE_EPOCHS = 40
+    BATCH_SIZE = 12
     LR = 1e-4
     DEVICE = "cuda:0"
     DTYPE = "fp32"
@@ -524,12 +538,13 @@ if __name__ == "__main__":
         device = DEVICE,
         ignore_index = IGNORE_INDEX
     )
-    exit()
 
     # Finetune BERT
     X_train, X_test, y_train, y_test = split_finetune_data(
-        data_path = pt_dataset_path,
+        data_path = ft_dataset_path,
+        tokenizer = tokenizer,
         test_size = TEST_SIZE,
+        max_length = MAX_SEQ_LENGTH,
         random_state = SEED,
         dtype = DTYPE
     )
