@@ -2,7 +2,7 @@ from ..blocks import Embedding, TransformerEncoderLayer, Linear, Dropout, LayerN
 from .abstract_model import AbstractModel
 from ..data import Tensor
 
-class BertEmbeddings:
+class BertEmbeddings(AbstractModel):
     def __init__(
         self, 
         vocab_size: int,
@@ -12,19 +12,17 @@ class BertEmbeddings:
     ):
         self.token_emb = Embedding(vocab_size, d_model)
         self.pos_emb = Embedding(max_len, d_model)
-        self.seg_emb = Embedding(2, d_model)
 
         self.ln = LayerNorm(d_model)
         self.dropout = Dropout(dropout)
 
-    def forward(self, input_ids, token_type_ids):
+    def forward(self, input_ids):
         _, T = input_ids.shape
         pos_ids = Tensor.arange(T, dtype = input_ids.dtype, device = input_ids.device)[None, :]
 
         x = (
             self.token_emb(input_ids)
             + self.pos_emb(pos_ids)
-            + self.seg_emb(token_type_ids)
         )
 
         x = self.ln.forward(x)
@@ -33,12 +31,24 @@ class BertEmbeddings:
     def backward(self, dLdy):
         dLdy = self.dropout.backward(dLdy)
         dLdy = self.ln.backward(dLdy)
-
         self.token_emb.backward(dLdy)
         self.pos_emb.backward(dLdy.sum(axis=0, keepdims=True))
-        self.seg_emb.backward(dLdy)
-        
-class MLMHead:
+
+    def parameters(self):
+        return (
+            self.token_emb.parameters() +
+            self.pos_emb.parameters() +
+            self.ln.parameters()
+        )
+
+    def to_device(self, device: str):
+        self.token_emb.to_device(device)
+        self.pos_emb.to_device(device)
+        self.ln.to_device(device)
+        self.dropout.to_device(device)
+        return self
+
+class MLMHead(AbstractModel):
     def __init__(
         self, 
         d_model: int, 
@@ -58,7 +68,21 @@ class MLMHead:
         dLdy = self.gelu.backward(dLdy)
         return self.fc1.backward(dLdy)
 
-class BertClassifier:
+    def parameters(self):
+        return (
+            self.fc1.parameters() +
+            self.ln.parameters() +
+            self.fc2.parameters()
+        )
+
+    def to_device(self, device: str):
+        self.fc1.to_device(device)
+        self.gelu.to_device(device)
+        self.ln.to_device(device)
+        self.fc2.to_device(device)
+        return self
+
+class BertClassifier(AbstractModel):
     def __init__(self, d_model):
         self.fc = Linear(d_model, 1)
 
@@ -73,6 +97,13 @@ class BertClassifier:
         dx = Tensor.zeros((B, self.seq_len, D), dtype=dcls.dtype, device=dcls.device)
         dx[:, 0] = dcls
         return dx
+
+    def parameters(self):
+        return self.fc.parameters()
+
+    def to_device(self, device: str):
+        self.fc.to_device(device)
+        return self
 
 class BERT(AbstractModel):
     def __init__(
@@ -106,13 +137,13 @@ class BERT(AbstractModel):
     def generate_mask(self, input_ids):
         return (input_ids == 0)[:, None, None, :]
 
-    def forward(self, input_ids, token_type_ids):
+    def forward(self, input_ids):
         assert self.task is not None, "before call forward() set task for BERT"
         
         mask = self.generate_mask(input_ids)
         for _, layer in enumerate(self.layers):
             if isinstance(layer, BertEmbeddings):
-                x = layer(input_ids, token_type_ids)
+                x = layer(input_ids)
             else:
                 x = layer(x, mask) 
 
@@ -135,3 +166,11 @@ class BERT(AbstractModel):
 
         for _, layer in enumerate(reversed(self.layers)):
             dLdy = layer.backward(dLdy)    
+
+    def to_device(self, device: str):
+        self.classifier = self.classifier.to_device(device)
+        self.mlm_head = self.mlm_head.to_device(device)
+        for layer in self.layers:
+            layer.to_device(device)
+
+        return self
