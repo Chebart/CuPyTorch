@@ -3,11 +3,11 @@ from abc import ABC, abstractmethod
 from core.data import Tensor
 
 class AbstractBlock(ABC):
-    def __call__(self, x: Tensor)-> Tensor:
-        return self.forward(x)
+    def __call__(self, *args, **kwargs) -> Tensor:
+        return self.forward(*args, **kwargs)
 
     @abstractmethod
-    def forward(self, x: Tensor)-> Tensor:
+    def forward(self, *args, **kwargs) -> Tensor:
         """Calculate forward pass"""
         pass
 
