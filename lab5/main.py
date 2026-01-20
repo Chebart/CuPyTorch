@@ -130,7 +130,7 @@ def get_finetune_data():
 # Split data
 # ----------------------
 
-def tokenize_input(
+def tokenize_seq(
     texts: list[str],
     tokenizer,
     max_length: int = 128
@@ -160,7 +160,7 @@ def read_jsonl_by_rows_and_tokenize(
             if i >= max_rows:
                 break
             obj = json.loads(line)
-            texts.append(tokenize_input([obj["text"]], tokenizer, max_length)["input_ids"][0])
+            texts.append(tokenize_seq([obj["text"]], tokenizer, max_length)["input_ids"][0])
 
     return np.stack(texts, axis=0)
 
@@ -174,6 +174,7 @@ def create_mlm_inputs_and_labels(
     # Set init values for input and labels
     X = input_ids.copy()
     y = input_ids.copy()
+    original = input_ids.copy()
     N, L = X.shape
 
     # Mask special tokens
@@ -198,7 +199,10 @@ def create_mlm_inputs_and_labels(
     random_tokens = np.random.randint(0, tokenizer.vocab_size, size=(N, L))
     X[random_token_mask] = random_tokens[random_token_mask]
 
-    return X, y
+    # Union X and input_ids
+    X_packed = np.stack([X, original], axis=1)
+
+    return X_packed, y
 
 def split_pretrain_data(
     data_path: str,
@@ -208,8 +212,7 @@ def split_pretrain_data(
     max_length: int,
     mlm_probability: float = 0.15,
     random_state: int = 42,
-    ignore_index: int = -100,
-    dtype: str = "fp32"
+    ignore_index: int = -100
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     
     # Read needed N rows from file
@@ -221,15 +224,12 @@ def split_pretrain_data(
     )
 
     # Process text into X and y
-    X_np, y_np = create_mlm_inputs_and_labels(
+    X, y = create_mlm_inputs_and_labels(
         input_ids = texts,
         tokenizer = tokenizer,
         mlm_probability = mlm_probability,
         ignore_index = ignore_index
     )
-    # Convert to Tensor
-    X = Tensor(X_np, dtype = dtype)
-    y = Tensor(y_np, dtype = dtype)
 
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
@@ -257,7 +257,7 @@ def split_finetune_data(
     df["toxic"] = df["toxic"].astype(int)
 
     # Tokenize comments
-    encodings = tokenize_input(
+    encodings = tokenize_seq(
         texts = df["comment"].tolist(),
         tokenizer = tokenizer,
         max_length = max_length
@@ -313,22 +313,82 @@ def compute_metrics(
 
     return metrics
 
+def detokenize_seq(
+    token_ids: np.ndarray | list[int],
+    tokenizer,
+    skip_special_tokens: bool = False
+) -> str:
+    
+    if isinstance(token_ids, np.ndarray):
+        token_ids = token_ids.tolist()
+
+    return tokenizer.decode(
+        token_ids,
+        skip_special_tokens = skip_special_tokens,
+        clean_up_tokenization_spaces = False
+    )
+
+def save_seq_examples(
+    xb_seq: np.ndarray,
+    yb_seq: np.ndarray,
+    pred_seq: np.ndarray,
+    original: np.ndarray,
+    tokenizer: Any,
+    file_path: str,
+    ignore_index: int = -100
+):
+    # Set init values
+    input_tokens = xb_seq.copy()
+    output_tokens = xb_seq.copy()
+
+    # Keep only valid tokens
+    masked_positions = yb_seq != ignore_index
+    output_tokens[masked_positions] = pred_seq[masked_positions]
+
+    # Get decoded sequnces
+    decoded_input = detokenize_seq(input_tokens, tokenizer, skip_special_tokens = False)
+    decoded_output = detokenize_seq(output_tokens, tokenizer, skip_special_tokens = True)
+    target_sequence = detokenize_seq(original, tokenizer, skip_special_tokens = True)
+
+    # Save sequences to file
+    with open(file_path, "a") as f:
+        f.write(
+            f"input: {decoded_input}\n"
+            f"output: {decoded_output}\n"
+            f"target: {target_sequence}\n\n"
+        )
+
 def run_epoch(
     X: Tensor, 
     y: Tensor, 
-    model: AbstractModel, 
+    model: AbstractModel,
+    tokenizer: Any,
     loss_fn: AbstractLoss, 
     optimizer: AbstractOptimizer,
     task: str,
+    examples_file: str,
     batch_size: int = 32,
     train: bool = True,
     device: str = "cuda:0",
     ignore_index: int | None = None
 ):
+    # Reset examples file when test model
+    if task == "mlm" and not train:
+        with open(examples_file, "w"):
+            pass
+
     stats = {}
     for Xb, yb in tqdm(batch_split(X, y, batch_size=batch_size),
                        total=(len(X) + batch_size - 1) // batch_size,
                        desc="Training batches" if train else "Validation batches"):
+
+        if task == "mlm":
+            # Get original seq
+            original = Xb[:, 1, :]
+            # Convert to Tensor
+            Xb = Tensor(Xb[:, 0, :], dtype = "fp32")
+            yb = Tensor(yb, dtype = "fp32")
+
         # Send data to device
         Xb = Xb.to_device(device)
         yb = yb.to_device(device)
@@ -358,6 +418,19 @@ def run_epoch(
         for k, v in batch_metrics.items():
             stats.setdefault(k, []).append(v)
 
+        # Save examples
+        if task == "mlm" and not train:
+            idx = random.randint(0, Xb.shape[0] - 1)
+            save_seq_examples(
+                xb_seq = Xb[idx].to_numpy().astype(int),
+                yb_seq = yb[idx].to_numpy().astype(int),
+                pred_seq = y_pred_np[idx].argmax(-1).astype(int),
+                original = original[idx].astype(int),
+                tokenizer = tokenizer,
+                file_path = examples_file,
+                ignore_index = ignore_index
+            )
+
     # Calculate mean over batches
     for k in stats:
         stats[k] = float(np.mean(stats[k]))
@@ -372,6 +445,7 @@ def start_train_test_pipeline(
     y_train: Tensor, 
     y_test: Tensor,
     model: AbstractModel,
+    tokenizer: Any,
     task: str,
     loss_fn: AbstractLoss,
     optimizer: AbstractOptimizer,
@@ -395,10 +469,12 @@ def start_train_test_pipeline(
         train_stats = run_epoch(
             X_train, 
             y_train,
-            model, 
+            model,
+            tokenizer,
             loss_fn, 
             optimizer,
             task = task,
+            examples_file = f"{results_path}/test_example.txt",
             batch_size = batch_size,
             train = True,
             device = device,
@@ -413,10 +489,12 @@ def start_train_test_pipeline(
             test_stats = run_epoch(
                 X_test, 
                 y_test,
-                model, 
+                model,
+                tokenizer,
                 loss_fn,
                 optimizer = None,
                 task = task,
+                examples_file = f"{results_path}/test_example.txt",
                 batch_size = batch_size,
                 train = False,
                 device = device,
@@ -519,8 +597,7 @@ if __name__ == "__main__":
         max_length = MAX_SEQ_LENGTH,
         mlm_probability = MLM_PROB,
         random_state = SEED,
-        ignore_index = IGNORE_INDEX,
-        dtype = DTYPE
+        ignore_index = IGNORE_INDEX
     ) 
     start_train_test_pipeline(
         X_train, 
@@ -528,6 +605,7 @@ if __name__ == "__main__":
         y_train, 
         y_test,
         model,
+        tokenizer,
         task = "mlm",
         loss_fn = loss_fn,
         optimizer = optimizer,
@@ -554,6 +632,7 @@ if __name__ == "__main__":
         y_train, 
         y_test,
         model,
+        tokenizer,
         task = "classification",
         loss_fn = loss_fn,
         optimizer = optimizer,
