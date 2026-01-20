@@ -352,6 +352,9 @@ class Tensor:
         out = self.backend.where(mask, value, self.data)
         return Tensor(out, dtype = self.dtype, device = self.device)
     
+    def isinf(self):
+        return Tensor(self.backend.isinf(self.data), dtype = "bool", device = self.device)
+
     def clone(self)-> Tensor:
         return Tensor(self.data.copy(), self.dtype, self.device)
 
@@ -408,6 +411,14 @@ class Tensor:
         backend = Tensor.define_backend(device)
         backend_dtype = Tensor.get_backend_dtype(backend, dtype)
         return Tensor(backend.eye(n, m, dtype = backend_dtype), dtype, device)
+
+    @staticmethod
+    def diag(array, dtype = "fp16", device="cpu"):
+        if isinstance(array, Tensor):
+            array = array.data
+
+        backend = Tensor.define_backend(device) 
+        return Tensor(backend.diag(array), dtype, device)
 
     @staticmethod
     def where(
