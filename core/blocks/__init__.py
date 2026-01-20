@@ -6,6 +6,7 @@ from .conv_transpose2d import ConvTranspose2D
 from .block_rnn import RNNBlock
 from .block_lstm import LSTMBlock
 from .block_gru import GRUBlock
+from .gcn_conv import GCNConv
 
 from .max_pool2d import MaxPool2D
 from .avg_pool2d import AvgPool2D
