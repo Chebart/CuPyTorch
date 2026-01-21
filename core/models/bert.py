@@ -162,7 +162,9 @@ class BERT(AbstractModel):
         if self.task == "mlm":
             dLdy = self.mlm_head.backward(dLdy)
         elif self.task == "cls":
+            # for classification, do not train the full model.
             dLdy = self.classifier.backward(dLdy)
+            return
 
         for _, layer in enumerate(reversed(self.layers)):
             dLdy = layer.backward(dLdy)    
