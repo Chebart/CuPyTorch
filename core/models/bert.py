@@ -48,6 +48,12 @@ class BertEmbeddings(AbstractModel):
         self.dropout.to_device(device)
         return self
 
+    def train(self):
+        self.dropout.train()
+
+    def eval(self):
+        self.dropout.eval()
+
 class MLMHead(AbstractModel):
     def __init__(
         self, 
@@ -149,7 +155,7 @@ class BERT(AbstractModel):
 
         if self.task == "mlm":
             x = self.mlm_head(x)
-        elif self.task == "cls":
+        elif self.task == "classification":
             x = self.classifier(x)
 
         return self.softmax(x)
@@ -161,13 +167,20 @@ class BERT(AbstractModel):
         
         if self.task == "mlm":
             dLdy = self.mlm_head.backward(dLdy)
-        elif self.task == "cls":
+        elif self.task == "classification":
             # for classification, do not train the full model.
             dLdy = self.classifier.backward(dLdy)
             return
 
         for _, layer in enumerate(reversed(self.layers)):
             dLdy = layer.backward(dLdy)    
+
+    def parameters(self):
+        params = self.mlm_head.parameters() + self.classifier.parameters()
+        for _, layer in enumerate(self.layers):
+            params += layer.parameters()
+
+        return params
 
     def to_device(self, device: str):
         self.classifier = self.classifier.to_device(device)
@@ -176,3 +189,14 @@ class BERT(AbstractModel):
             layer.to_device(device)
 
         return self
+    
+    # ----------------------
+    # this methods works only for layers that use dropout
+    # ----------------------
+    def train(self):
+        for _, layer in enumerate(self.layers):
+            layer.train()
+
+    def eval(self):
+        for _, layer in enumerate(self.layers):
+            layer.eval()

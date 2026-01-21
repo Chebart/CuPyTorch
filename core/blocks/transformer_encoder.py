@@ -62,3 +62,11 @@ class TransformerEncoderLayer(AbstractBlock):
         d_x0_from_attn = self.self_attn.backward(d_attn_out)
 
         return d_res1 + d_x0_from_attn
+
+    def train(self):
+        self.dropout1.train()
+        self.dropout2.train()
+
+    def eval(self):
+        self.dropout1.eval()
+        self.dropout2.eval()
