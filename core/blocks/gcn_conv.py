@@ -13,7 +13,7 @@ class GCNConv(AbstractBlock):
         # Set bias flag
         self._bias = bias
         # Init trainable params and small increments
-        self._w = xavier((out_features, in_features), dtype = dtype, uniform = True)
+        self._w = xavier((in_features, out_features), dtype = dtype, uniform = True)
         self._b = Tensor.zeros((out_features), dtype = dtype)
         self._dw = Tensor.zeros(self._w.shape, dtype = dtype)
         self._db = Tensor.zeros(self._b.shape, dtype = dtype)
@@ -39,7 +39,7 @@ class GCNConv(AbstractBlock):
         # Normalize adjency
         self.adj_norm = self.normalize_adjacency(adj)
         # Do linear transformation
-        self.support = x @ self.W
+        self.support = x @ self._w
         # Graph propagation
         out = self.adj_norm @ self.support + self._b
 
@@ -53,5 +53,5 @@ class GCNConv(AbstractBlock):
 
     def backward(self, dLdy):
         self._db += dLdy.sum(axis = 0)
-        self._dw += self.adj_norm @ self.x @ dLdy
+        self._dw += self.x.T @ self.adj_norm @ dLdy
         return self.adj_norm @ dLdy @ self._w.T
