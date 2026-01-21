@@ -90,7 +90,7 @@ class MLMHead(AbstractModel):
 
 class BertClassifier(AbstractModel):
     def __init__(self, d_model):
-        self.fc = Linear(d_model, 1)
+        self.fc = Linear(d_model, 2)
 
     def forward(self, hidden_states):
         self.seq_len = hidden_states.shape[1]
