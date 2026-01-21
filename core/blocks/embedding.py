@@ -1,4 +1,5 @@
 from .abstract_block import AbstractBlock
+from .init_weights import xavier 
 from ..data import Tensor
 
 class Embedding(AbstractBlock):
@@ -9,6 +10,7 @@ class Embedding(AbstractBlock):
         vocab_size: int,
         embedding_dim: int,
         weights: Tensor | None = None,
+        uniform_init: bool = False,
         dtype: str = "fp32"
     ):
         # Create embeddings and small increments
@@ -17,7 +19,7 @@ class Embedding(AbstractBlock):
                 f"weights must have shape ({vocab_size}, {embedding_dim})"
             self._embeddings = weights
         else:
-            self._embeddings = Tensor.rand((vocab_size, embedding_dim), dtype = dtype)
+            self._embeddings = xavier((vocab_size, embedding_dim), dtype = dtype, uniform = uniform_init)
 
         self._dembeddings = Tensor.zeros(self._embeddings.shape, dtype = dtype)
 

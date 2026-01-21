@@ -11,7 +11,8 @@ class RNNBlock(AbstractBlock):
         input_size: int,
         hidden_size: int,
         dtype: str = "fp32",
-        bias: bool = True
+        bias: bool = True,
+        uniform_init: bool = False
     ):
         # Remember dims
         self.input_size = input_size
@@ -19,7 +20,7 @@ class RNNBlock(AbstractBlock):
         # Set bias flag
         self._bias = bias
         # Init trainable params and small increments
-        self._w = xavier((hidden_size, input_size + hidden_size), dtype = dtype, uniform = False)
+        self._w = xavier((hidden_size, input_size + hidden_size), dtype = dtype, uniform = uniform_init)
         self._b = Tensor.zeros((hidden_size), dtype = dtype)
         self._dw = Tensor.zeros(self._w.shape, dtype = dtype)
         self._db = Tensor.zeros(self._b.shape, dtype = dtype)

@@ -14,6 +14,7 @@ class ConvTranspose2D(AbstractBlock):
         stride: int = 1,
         padding: int = 0,
         bias: bool = True,
+        uniform_init: bool = False,
         dtype: str = "fp32"
     ):
         # Init hyperparams
@@ -25,7 +26,7 @@ class ConvTranspose2D(AbstractBlock):
         self._bias = bias
 
         # Init trainable params and small increments
-        self._w = xavier((self._out, self._in, kernel_size, kernel_size), dtype = dtype, uniform = False)
+        self._w = xavier((self._out, self._in, kernel_size, kernel_size), dtype = dtype, uniform = uniform_init)
         self._b = Tensor.zeros((self._out), dtype = dtype)
         self._dw = Tensor.zeros(self._w.shape, dtype = dtype)
         self._db = Tensor.zeros(self._b.shape, dtype = dtype)

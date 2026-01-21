@@ -10,12 +10,13 @@ class Linear(AbstractBlock):
         in_features: int,
         out_features: int,
         dtype: str = "fp32",
-        bias: bool = True
+        bias: bool = True,
+        uniform_init: bool = False
     ):
         # Set bias flag
         self._bias = bias
         # Init trainable params and small increments
-        self._w = xavier((out_features, in_features), dtype = dtype, uniform = True)
+        self._w = xavier((out_features, in_features), dtype = dtype, uniform = uniform_init)
         self._b = Tensor.zeros((out_features), dtype = dtype)
         self._dw = Tensor.zeros(self._w.shape, dtype = dtype)
         self._db = Tensor.zeros(self._b.shape, dtype = dtype)
