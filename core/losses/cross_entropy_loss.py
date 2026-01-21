@@ -14,8 +14,12 @@ class CrossEntropyLoss(AbstractLoss):
         if self.ignore_index is None:
             self.valid_mask = Tensor.ones(y_true.shape, device = y_pred.device).astype("bool")
         else:
-            self.valid_mask = (y_true != self.ignore_index).astype("bool")
-            
+            has_ignore = (y_true == self.ignore_index).any().item()
+            if has_ignore:
+                self.valid_mask = (y_true != self.ignore_index).astype("bool")
+            else:
+                self.valid_mask = Tensor.ones(y_true.shape, device = y_pred.device).astype("bool")
+
         # Use mask to get true class
         y_pred = y_pred[self.valid_mask]
         y_true = y_true[self.valid_mask]
