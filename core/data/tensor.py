@@ -295,6 +295,9 @@ class Tensor:
             else:
                 self.data[index] = value
 
+    def item(self):
+        return self.data.item()
+
     def reshape(self, *shape)-> Tensor:
         return Tensor(self.data.reshape(*shape), self.dtype, self.device)
 
@@ -334,6 +337,9 @@ class Tensor:
 
     def argmax(self, axis=None, keepdims=False)-> Tensor:
         return Tensor(self.data.argmax(axis=axis), self.dtype, self.device)
+
+    def any(self, axis=None, keepdims=False) -> Tensor:
+        return Tensor(self.data.any(axis=axis, keepdims=keepdims), self.dtype, self.device)
 
     # ---------------------
     # Utility methods
