@@ -78,7 +78,8 @@ KAGGLE_KEY=
 ├── lab2             # LeNet-5 training
 ├── lab3             # RNN/LSTM/GRU training
 ├── lab4             # VAE-GAN training
-└── lab5             # BERT pre-training and finetuning
+├── lab5             # BERT pre-training and finetuning
+└── lab6             # GCN training
 ```
 
 ## Usage Example
