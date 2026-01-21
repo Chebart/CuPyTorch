@@ -34,6 +34,16 @@ class AbstractModel(ABC):
 
         return self
 
+    def train(self):
+        """Prepare model for training"""
+        for layer in self.layers:
+            layer.train()
+
+    def eval(self):
+        """Prepare model for evaluation"""
+        for layer in self.layers:
+            layer.eval()
+
     @abstractmethod
     def backward(self, dLdy: Tensor)-> None:
         """Calculate backward pass"""
