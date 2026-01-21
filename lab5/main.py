@@ -304,12 +304,11 @@ def compute_metrics(
             metrics["token_acc"] = (pred_ids == y_true_np).mean()
 
     elif task == "classification":
-        num_cls = y_pred_np.shape[1]
         pred_cls = np.argmax(y_pred_np, axis=1)
-        metrics["acc"] = accuracy(pred_cls, y_true_np, num_cls)
-        metrics["prec"] = precision(pred_cls, y_true_np, num_cls)
-        metrics["rec"] = recall(pred_cls, y_true_np, num_cls)
-        metrics["f1"] = f1(pred_cls, y_true_np, num_cls)
+        metrics["acc"] = accuracy(pred_cls, y_true_np, 2)
+        metrics["prec"] = precision(pred_cls, y_true_np, 2)
+        metrics["rec"] = recall(pred_cls, y_true_np, 2)
+        metrics["f1"] = f1(pred_cls, y_true_np, 2)
 
     return metrics
 
@@ -466,6 +465,7 @@ def start_train_test_pipeline(
         logging.info(f"Epoch {epoch + 1}/{epochs}")
 
         # train
+        model.train()
         train_stats = run_epoch(
             X_train, 
             y_train,
@@ -486,6 +486,7 @@ def start_train_test_pipeline(
 
         # test
         if (epoch + 1) % test_step == 0:
+            model.eval()
             test_stats = run_epoch(
                 X_test, 
                 y_test,
@@ -553,14 +554,14 @@ if __name__ == "__main__":
     np.random.seed(SEED)
     TOKENIZER_NAME = "cointegrated/rubert-tiny2"
     MODEL_NAME = "cointegrated/rubert-tiny2"
-    N_ROWS = 2*1e5
+    N_ROWS = 2.0 * 1e5
     MLM_PROB = 0.15
     IGNORE_INDEX = -100
     TEST_SIZE = 0.2
-    TEST_STEP = 2
+    TEST_STEP = 4
     DROPOUT = 0.1
-    PRETRAIN_EPOCHS = 100
-    FINETUNE_EPOCHS = 40
+    PRETRAIN_EPOCHS = 24
+    FINETUNE_EPOCHS = 6
     BATCH_SIZE = 12
     LR = 1e-4
     DEVICE = "cuda:0"
@@ -598,7 +599,7 @@ if __name__ == "__main__":
         mlm_probability = MLM_PROB,
         random_state = SEED,
         ignore_index = IGNORE_INDEX
-    ) 
+    )
     start_train_test_pipeline(
         X_train, 
         X_test,
@@ -618,6 +619,7 @@ if __name__ == "__main__":
     )
 
     # Finetune BERT
+    TEST_STEP = 2
     X_train, X_test, y_train, y_test = split_finetune_data(
         data_path = ft_dataset_path,
         tokenizer = tokenizer,
