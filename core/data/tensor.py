@@ -490,7 +490,8 @@ class Tensor:
         return self
 
     def masked_fill(self, mask, value):
-        mask = self._as_backend_array(mask, self.dtype).astype(bool)
+        backend_dtype = Tensor.get_backend_dtype(self.backend, self.dtype)
+        mask = self._as_backend_array(mask, backend_dtype).astype(bool)
         out = self._run_on_device(lambda: self.backend.where(mask, value, self.data))
         return Tensor(out, dtype=self.dtype, device=self.device)
 
