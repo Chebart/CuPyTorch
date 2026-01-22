@@ -6,85 +6,42 @@ from .backend import AVAILABLE_BACKENDS
 
 class Tensor:
     """
-    Custom data class, supporting automatic backend selection (NumPy/CuPy) 
+    Custom data class, supporting automatic backend selection (NumPy/CuPy)
     and seamless CPU/GPU device tracking.
     """
 
     def __init__(self, data, dtype: str = "fp32", device: str = "cpu"):
         self._backend = Tensor.define_backend(device)
-        self._dtype = Tensor.get_backend_dtype(self.backend, dtype)
+        self._dtype = dtype
         self._device = device
 
+        # create array on the correct device
+        backend_dtype = Tensor.get_backend_dtype(self.backend, dtype)
         if self.backend.__name__ == "cupy":
-            with self.device_context():
-                self._data = self.backend.asarray(data, dtype = self._dtype)
-        elif self.backend.__name__ == "numpy":
-            self._data = self.backend.array(data, dtype = self._dtype)
+            self._data = self._run_on_device(lambda: self.backend.asarray(data, dtype=backend_dtype))
+        else:
+            self._data = self._run_on_device(lambda: self.backend.array(data, dtype=backend_dtype))
 
-        # change dtype on string value
-        self._dtype = dtype
-        # set strides
+        # store strides lazily from data
         self._strides = self.data.strides
-
-    # ---------------------
-    # Verification methods
-    # ---------------------
-
-    def same_device(self, other: Tensor):
-        return self.device == other.device
-
-    @staticmethod
-    def define_backend(device: str):
-        if device.startswith("cuda"):
-            if "cupy" not in AVAILABLE_BACKENDS:
-                raise ValueError(f"CuPy is not installed. Cannot move tensor to {device}.")
-            return AVAILABLE_BACKENDS["cupy"]
-        
-        return AVAILABLE_BACKENDS["numpy"]
-
-    @staticmethod
-    def get_backend_dtype(backend, dtype: str):
-        dtype_map = {
-            "fp16": backend.float16,
-            "fp32": backend.float32,
-            "fp64": backend.float64,
-            "int16": backend.int16,
-            "int32": backend.int32,
-            "int64": backend.int64,
-            "bool": backend.bool_,
-        }
-        if dtype not in dtype_map:
-            raise ValueError(f"Unsupported dtype: '{dtype}'")
-        
-        return dtype_map[dtype]
-    
-    # ---------------------
-    # Properties
-    # ---------------------
 
     @property
     def backend(self):
         return self._backend
-    
+
     @property
     def data(self):
         return self._data
 
     @property
     def T(self):
-        return Tensor(self.data.T, self.dtype, self.device)
+        out = self._run_on_device(lambda: self.data.T)
+        return Tensor(out, self.dtype, self.device)
 
     @property
     def device(self):
         return self._device
-    
-    @property
-    def device_id(self):
-        if self.device.startswith("cuda"): 
-            return int(self.device.split(':')[-1])
-        else:
-            return None
-    
+
     @property
     def shape(self):
         return self.data.shape
@@ -102,244 +59,395 @@ class Tensor:
         return self._dtype
 
     # ---------------------
-    # Device transfer methods
+    # Backend methods
     # ---------------------
 
-    def to_device(self, device: str)-> Tensor:
-        new_backend = self.define_backend(device)
+    @staticmethod
+    def define_backend(device: str):
+        if device.startswith("cuda"):
+            if "cupy" not in AVAILABLE_BACKENDS:
+                raise ValueError(f"CuPy is not installed. Cannot move tensor to {device}.")
+            
+            return AVAILABLE_BACKENDS["cupy"]
+
+        return AVAILABLE_BACKENDS["numpy"]
+
+    @staticmethod
+    def get_backend_dtype(backend, dtype: str):
+        dtype_map = {
+            "fp16": backend.float16,
+            "fp32": backend.float32,
+            "fp64": backend.float64,
+            "int16": backend.int16,
+            "int32": backend.int32,
+            "int64": backend.int64,
+            "bool": backend.bool_,
+        }
+        if dtype not in dtype_map:
+            raise ValueError(f"Unsupported dtype: '{dtype}'")
+
+        return dtype_map[dtype]
+
+    # ---------------------
+    # Dtype methods
+    # ---------------------
+
+    @staticmethod
+    def _dtype_rank(dtype: str) -> int:
+        order = {
+            "bool": 0,
+            "int16": 1,
+            "int32": 2,
+            "int64": 3,
+            "fp16": 4,
+            "fp32": 5,
+            "fp64": 6,
+        }
+        return order.get(dtype, 5)
+
+    @staticmethod
+    def _get_common_dtype(dtype1: str, dtype2: str) -> str:
+        if dtype1 == dtype2:
+            return dtype1
+        
+        r1 = Tensor._dtype_rank(dtype1)
+        r2 = Tensor._dtype_rank(dtype2)
+        return dtype1 if r1 >= r2 else dtype2
+
+    # ---------------------
+    # Properties
+    # ---------------------
+
+    # ---------------------
+    # Device methods
+    # ---------------------
+
+    @staticmethod
+    def device_id(device: str) -> int | None:
+        if device.startswith("cuda"):
+            return int(device.split(":")[-1])
+        return None
+
+    def same_device(self, other: Tensor):
+        return self.device == other.device
+
+    def to_device(self, device: str) -> Tensor:
+        # If already on the correct device, do nothing
+        if self.device == device:
+            return self
+
         self._device = device
+        new_backend = self.define_backend(device)
+        old_backend = self.backend
 
         if device.startswith("cuda"):
-            if self.backend.__name__ == "numpy":
-                self._backend = new_backend
-
-            with self.backend.cuda.Device(self.device_id):
-                self._data = self.backend.asarray(self.data)
+            # moving to GPU
+            self._backend = new_backend
+            self._data = self._run_on_device(lambda: self.backend.asarray(self.data))
         else:
-            if self.backend.__name__ == "cupy":
+            # moving to CPU
+            if old_backend.__name__ == "cupy":
                 self._data = self.data.get()
                 self._backend = new_backend
+            else:
+                self._backend = new_backend
+                self._data = self.data
 
         return self
 
     # ---------------------
-    # Context manager protocol
+    # Context managers
     # ---------------------
 
+    @staticmethod
     @contextlib.contextmanager
-    def device_context(self):
-        if self.backend.__name__ == "cupy":
-            with self.backend.cuda.Device(self.device_id):
+    def device_context(device: str):
+        backend = Tensor.define_backend(device)
+        if backend.__name__ == "cupy":
+            dev_id = Tensor.device_id(device) or 0
+            with backend.cuda.Device(dev_id):
                 yield
-        elif self.backend.__name__ == "numpy":
+        else:
             yield
+
+    # ---------------------
+    # Internal executors
+    # ---------------------
+
+    @staticmethod
+    def _run_static_on_device(device: str, fn):
+        with Tensor.device_context(device):
+            return fn()
+
+    def _run_on_device(self, fn):
+        with Tensor.device_context(self.device):
+            return fn()
+
+    def _resolve_binary_operands(self, other):
+        if isinstance(other, Tensor):
+            # Tensor * Tensor
+            if not self.same_device(other):
+                raise ValueError(
+                    f"Expected all tensors to be on the same device, "
+                    f"but found {self.device} and {other.device}!"
+                )
+            dtype = Tensor._get_common_dtype(self.dtype, other.dtype)
+            return other.data, dtype
+        else:
+            # Tensor * scalar/array
+            result_dtype = self.dtype
+            rhs = other
+
+        return rhs, result_dtype
+
+    def _as_backend_array(self, x, backend_dtype):
+        # Unwrap Tensor
+        if isinstance(x, Tensor):
+            x = x.data
+
+        # If x is scalar
+        if isinstance(x, (int, float, bool)):
+            return x
+
+        # Must already be a backend array
+        if not isinstance(x, self.backend.ndarray):
+            raise TypeError(
+                f"Expected {self.backend.__name__}.ndarray, got {type(x).__name__}"
+            )
+
+        def run():
+            if self.backend.__name__ == "cupy":
+                # if device mismatch, reallocate array
+                if x.device.id != self.device_id:
+                    return self.backend.asarray(x, dtype=backend_dtype)
+
+            # fix dtype
+            if x.dtype != backend_dtype:
+                return x.astype(backend_dtype, copy=False)
+
+            return x
+
+        return self._run_on_device(run)
+
+    def _apply_binary_op(self, other, op_func, *, inplace=False):
+        # Resolve operands and dtype
+        rhs_data, result_dtype = self._resolve_binary_operands(other)
+        backend_dtype = Tensor.get_backend_dtype(self.backend, result_dtype)
+
+        # Define kernel
+        def run():
+            a = self._as_backend_array(self.data, backend_dtype)
+            b = self._as_backend_array(rhs_data, backend_dtype)
+            return op_func(a, b)
+
+        # Execute operation
+        result = self._run_on_device(run)
+
+        # Inplace data if needed
+        if inplace:
+            self._data = result
+            self._dtype = result_dtype
+            return self
+
+        return Tensor(result, result_dtype, self.device)
+
+    @staticmethod
+    def _static_op(
+        fn,
+        *args,
+        dtype="fp16",
+        device="cpu",
+    ) -> Tensor:
+        backend = Tensor.define_backend(device)
+        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
+
+        # unwrap Tensors
+        arrays = [
+            a.data if isinstance(a, Tensor) else a
+            for a in args
+        ]
+
+        def run():
+            out = fn(backend, backend_dtype, *arrays)
+            if hasattr(out, "dtype") and out.dtype != backend_dtype:
+                out = out.astype(backend_dtype, copy=False)
+
+            return out
+
+        out = Tensor._run_static_on_device(device, run)
+        return Tensor(out, dtype=dtype, device=device)
 
     # ---------------------
     # Binary operation methods
     # ---------------------
 
-    def _binary_op(op_func, inplace: bool = False, matmul: bool = False):
+    def _binary_op(op_func, inplace: bool = False):
         def method(self, other):
-            if isinstance(other, Tensor):
-                if not self.same_device(other):
-                    raise ValueError(
-                        f"Expected all tensors to be on the same device, "
-                        f"but found {self.device} and {other.device}!"
-                    )
-                other = other.data
-
-            with self.device_context():
-                if matmul:
-                    result = self.backend.matmul(self.data, other)
-                else:
-                    result = op_func(self.data, other)
-
-            if inplace:
-                self._data = result
-                return self
-            else:
-                return Tensor(result, self.dtype, self.device)
-        
+            return self._apply_binary_op(other, op_func, inplace=inplace)
         return method
-    
-    # Out-place ops
-    __add__ = _binary_op(operator.add, inplace = False, matmul = False)
-    __sub__ = _binary_op(operator.sub, inplace = False, matmul = False)
-    __mul__ = _binary_op(operator.mul, inplace = False, matmul = False)
-    __truediv__ = _binary_op(operator.truediv, inplace = False, matmul = False)
-    __pow__ = _binary_op(operator.pow, inplace = False, matmul = False)
-    __radd__ = __add__
-    __rsub__ = _binary_op(lambda x, y: operator.sub(y, x), inplace = False, matmul = False)
-    __rmul__ = __mul__
-    __rtruediv__ = _binary_op(lambda x, y: operator.truediv(y, x), inplace = False, matmul = False)
-    __rpow__ = _binary_op(lambda x, y: operator.pow(y, x), inplace = False, matmul = False)
 
-    # In-place ops
-    __iadd__ = _binary_op(operator.iadd, inplace = True, matmul = False)
-    __isub__ = _binary_op(operator.isub, inplace = True, matmul = False)
-    __imul__ = _binary_op(operator.imul, inplace = True, matmul = False)
-    __itruediv__ = _binary_op(operator.itruediv, inplace = True, matmul = False)
-    __ipow__ = _binary_op(operator.ipow, inplace = True, matmul = False)
+    # Out-of-place arithmetic
+    __add__ = _binary_op(operator.add)
+    __sub__ = _binary_op(operator.sub)
+    __mul__ = _binary_op(operator.mul)
+    __truediv__ = _binary_op(operator.truediv)
+    __pow__ = _binary_op(operator.pow)
 
-    # Comparison ops
-    __gt__ = _binary_op(lambda a, b: a > b, inplace = False, matmul = False)
-    __lt__ = _binary_op(lambda a, b: a < b, inplace = False, matmul = False)
-    __ge__ = _binary_op(lambda a, b: a >= b, inplace = False, matmul = False)
-    __le__ = _binary_op(lambda a, b: a <= b, inplace = False, matmul = False)
-    __eq__ = _binary_op(lambda a, b: a == b, inplace = False, matmul = False)
-    __ne__ = _binary_op(lambda a, b: a != b, inplace = False, matmul = False)
+    # Reversed arithmetic
+    __radd__ = _binary_op(lambda a, b: b + a)
+    __rsub__ = _binary_op(lambda a, b: b - a)
+    __rmul__ = _binary_op(lambda a, b: b * a)
+    __rtruediv__ = _binary_op(lambda a, b: b / a)
+    __rpow__ = _binary_op(lambda a, b: b ** a)
 
-    # Matrix multiplier ops
-    __matmul__ = _binary_op(None, inplace = False, matmul = True)
-    __rmatmul__ = _binary_op(None, inplace = False, matmul = True)
+    # In-place arithmetic
+    __iadd__ = _binary_op(operator.iadd, inplace=True)
+    __isub__ = _binary_op(operator.isub, inplace=True)
+    __imul__ = _binary_op(operator.imul, inplace=True)
+    __itruediv__ = _binary_op(operator.itruediv, inplace=True)
+    __ipow__ = _binary_op(operator.ipow, inplace=True)
+
+    # Comparisons
+    __gt__ = _binary_op(operator.gt)
+    __lt__ = _binary_op(operator.lt)
+    __ge__ = _binary_op(operator.ge)
+    __le__ = _binary_op(operator.le)
+    __eq__ = _binary_op(operator.eq)
+    __ne__ = _binary_op(operator.ne)
+
+    # Matrix multiplication (cleanest solution)
+    __matmul__ = _binary_op(lambda a, b: a @ b)
+    __rmatmul__ = _binary_op(lambda a, b: b @ a)
 
     # ---------------------
     # Unary operation methods
     # ---------------------
 
-    def __neg__(self)-> Tensor:
-        return Tensor(-self.data, self.dtype, self.device)
+    def __neg__(self) -> Tensor:
+        out = self._run_on_device(lambda: -self.data)
+        return Tensor(out, self.dtype, self.device)
 
-    def __abs__(self)-> Tensor:
-        return Tensor(abs(self.data), self.dtype, self.device)
+    def __abs__(self) -> Tensor:
+        out = self._run_on_device(lambda: abs(self.data))
+        return Tensor(out, self.dtype, self.device)
 
     # ---------------------
     # Elementwise methods
     # ---------------------
 
-    def exp(self)-> Tensor:
-        return Tensor(self.backend.exp(self.data), self.dtype, self.device)
+    def exp(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.exp(self.data))
+        return Tensor(out, self.dtype, self.device)
 
-    def log(self)-> Tensor:
-        return Tensor(self.backend.log(self.data), self.dtype, self.device)
+    def log(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.log(self.data))
+        return Tensor(out, self.dtype, self.device)
 
-    def sign(self)-> Tensor:
-        return Tensor(self.backend.sign(self.data), self.dtype, self.device)
+    def sign(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.sign(self.data))
+        return Tensor(out, self.dtype, self.device)
 
     def sqrt(self):
-        return Tensor(self.backend.sqrt(self.data), self.dtype, self.device)
+        out = self._run_on_device(lambda: self.backend.sqrt(self.data))
+        return Tensor(out, self.dtype, self.device)
 
-    def tanh(self)-> Tensor:
-        return Tensor(self.backend.tanh(self.data), self.dtype, self.device)
+    def tanh(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.tanh(self.data))
+        return Tensor(out, self.dtype, self.device)
 
-    def sin(self)-> Tensor:
-        return Tensor(self.backend.sin(self.data), self.dtype, self.device)
-    
-    def cos(self)-> Tensor:
-        return Tensor(self.backend.cos(self.data), self.dtype, self.device)
+    def sin(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.sin(self.data))
+        return Tensor(out, self.dtype, self.device)
+
+    def cos(self) -> Tensor:
+        out = self._run_on_device(lambda: self.backend.cos(self.data))
+        return Tensor(out, self.dtype, self.device)
 
     # ---------------------
     # Views methods
     # ---------------------
 
+    def _normalize_index(self, index):
+        if isinstance(index, Tensor):
+            idx = index.data
+            if idx.dtype == self.backend.bool_:
+                return idx
+            return idx.astype(int)
+
+        if isinstance(index, tuple):
+            return tuple(self._normalize_index(i) for i in index)
+
+        return index
+
     def __getitem__(self, index) -> Tensor:
-        with self.device_context():
-            # Handle multi-axis indexing
-            if isinstance(index, tuple):
-                processed_index = []
-                for idx in index:
-                    if isinstance(idx, Tensor):
-                        idx_data = idx.data
-                        if idx_data.dtype == self.backend.bool_:
-                            processed_index.append(idx_data)
-                        else:
-                            processed_index.append(idx_data.astype(int))
-                    else:
-                        processed_index.append(idx)
+        def run():
+            idx = self._normalize_index(index)
+            return self.data[idx]
 
-                data_indexed = self.data[tuple(processed_index)]
-
-            # Handle single Tensor index
-            elif isinstance(index, Tensor):
-                index_data = index.data
-                if index_data.dtype == self.backend.bool_:
-                    data_indexed = self.data[index_data]
-                else:
-                    data_indexed = self.data[index_data.astype(int)]
-
-            # Handle normal Python indexing
-            else:
-                data_indexed = self.data[index]
-
-            return Tensor(data_indexed, dtype=self.dtype, device=self.device)
+        out = self._run_on_device(run)
+        return Tensor(out, dtype=self.dtype, device=self.device)
 
     def __setitem__(self, index, value):
-        with self.device_context():
-            if isinstance(value, Tensor):
-                value = value.data
+        def run():
+            idx = self._normalize_index(index)
+            val = value.data if isinstance(value, Tensor) else value
+            self._data[idx] = val
 
-            # Handle multi-axis indexing
-            if isinstance(index, tuple):
-                processed_index = []
-                for idx in index:
-                    if isinstance(idx, Tensor):
-                        idx_data = idx.data
-                        if idx_data.dtype == self.backend.bool_:
-                            processed_index.append(idx_data)
-                        else:
-                            processed_index.append(idx_data.astype(int))
-                    else:
-                        processed_index.append(idx)
-
-                self._data[tuple(processed_index)] = value
-
-            # Handle single Tensor index
-            elif isinstance(index, Tensor):
-                idx_data = index.data
-                if idx_data.dtype == self.backend.bool_:
-                    self.data[idx_data] = value
-                else:
-                    self.data[idx_data.astype(int)] = value
-
-            # Handle normal Python indexing
-            else:
-                self.data[index] = value
+        self._run_on_device(run)
 
     def item(self):
         return self.data.item()
 
-    def reshape(self, *shape)-> Tensor:
-        return Tensor(self.data.reshape(*shape), self.dtype, self.device)
+    def reshape(self, *shape) -> Tensor:
+        out = self._run_on_device(lambda: self.data.reshape(*shape))
+        return Tensor(out, self.dtype, self.device)
 
-    def transpose(self, *axes)-> Tensor:
-        return Tensor(self.data.transpose(*axes), self.dtype, self.device)
+    def transpose(self, *axes) -> Tensor:
+        out = self._run_on_device(lambda: self.data.transpose(*axes))
+        return Tensor(out, self.dtype, self.device)
 
-    def as_strided(self, shape, strides)-> Tensor:
-        return Tensor(
-            self.backend.lib.stride_tricks.as_strided(self.data, shape=shape, strides=strides), 
-            self.dtype, 
-            self.device
+    def as_strided(self, shape, strides) -> Tensor:
+        out = self._run_on_device(
+            lambda: self.backend.lib.stride_tricks.as_strided(
+                self.data, 
+                shape=shape, 
+                strides=strides
+            )
         )
+        return Tensor(out, self.dtype, self.device)
 
     def put_along_axis(self, indices, values, axis):
-        if isinstance(indices, Tensor):
-            indices = indices.data.astype(int)
-        if isinstance(values, Tensor):
-            values = values.data
-
-        self.backend.put_along_axis(self.data, indices, values, axis=axis)
+        indices = self._as_backend_array(indices, self.dtype).astype(int)
+        values = self._as_backend_array(values, self.dtype)
+        self._run_on_device(lambda: self.backend.put_along_axis(self.data, indices, values, axis=axis))
 
     # ---------------------
     # Aggregation methods
     # ---------------------
 
-    def max(self, axis=None, keepdims=False)-> Tensor:
-        return Tensor(self.data.max(axis=axis, keepdims=keepdims), self.dtype, self.device)
+    def max(self, axis=None, keepdims=False) -> Tensor:
+        out = self._run_on_device(lambda: self.data.max(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
-    def min(self, axis=None, keepdims=False)-> Tensor:
-        return Tensor(self.data.min(axis=axis, keepdims=keepdims), self.dtype, self.device)
+    def min(self, axis=None, keepdims=False) -> Tensor:
+        out = self._run_on_device(lambda: self.data.min(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
-    def sum(self, axis=None, keepdims=False)-> Tensor:
-        return Tensor(self.data.sum(axis=axis, keepdims=keepdims), self.dtype, self.device)
+    def sum(self, axis=None, keepdims=False) -> Tensor:
+        out = self._run_on_device(lambda: self.data.sum(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
-    def mean(self, axis=None, keepdims=False)-> Tensor:
-        return Tensor(self.data.mean(axis=axis, keepdims=keepdims), self.dtype, self.device)
+    def mean(self, axis=None, keepdims=False) -> Tensor:
+        out = self._run_on_device(lambda: self.data.mean(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
-    def argmax(self, axis=None, keepdims=False)-> Tensor:
-        return Tensor(self.data.argmax(axis=axis), self.dtype, self.device)
+    def argmax(self, axis=None, keepdims=False) -> Tensor:
+        out = self._run_on_device(lambda: self.data.argmax(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
     def any(self, axis=None, keepdims=False) -> Tensor:
-        return Tensor(self.data.any(axis=axis, keepdims=keepdims), self.dtype, self.device)
+        out = self._run_on_device(lambda: self.data.any(axis=axis, keepdims=keepdims))
+        return Tensor(out, self.dtype, self.device)
 
     # ---------------------
     # Utility methods
@@ -349,188 +457,183 @@ class Tensor:
         return self.shape[0]
 
     def fill(self, value: int):
-        self.data.fill(value)
+        self._run_on_device(lambda: self.data.fill(value))
         return self
 
     def masked_fill(self, mask, value):
-        if isinstance(mask, Tensor):
-            mask = mask.data.astype(bool)
-        out = self.backend.where(mask, value, self.data)
-        return Tensor(out, dtype = self.dtype, device = self.device)
-    
-    def isinf(self):
-        return Tensor(self.backend.isinf(self.data), dtype = "bool", device = self.device)
+        mask = self._as_backend_array(mask, self.dtype).astype(bool)
+        out = self._run_on_device(lambda: self.backend.where(mask, value, self.data))
+        return Tensor(out, dtype=self.dtype, device=self.device)
 
-    def clone(self)-> Tensor:
-        return Tensor(self.data.copy(), self.dtype, self.device)
+    def isinf(self):
+        out = self._run_on_device(lambda: self.backend.isinf(self.data))
+        return Tensor(out, dtype="bool", device=self.device)
+
+    def clone(self) -> Tensor:
+        out = self._run_on_device(lambda: self.data.copy())
+        return Tensor(out, self.dtype, self.device)
 
     def clip(self, min_val: float, max_val: float):
-        self.backend.clip(self.data, a_min = min_val, a_max = max_val, out = self.data)
-        return self
+        out = self._run_on_device(lambda: self.backend.clip(self.data, a_min=min_val, a_max=max_val))
+        return Tensor(out, self.dtype, self.device)
 
     @staticmethod
-    def pad(array, pad_width, mode = "constant", dtype = "fp16", device="cpu")-> Tensor:
-        if isinstance(array, Tensor):
-            array = array.data
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.pad(array, pad_width, mode = mode), dtype, device)
+    def pad(array, pad_width, mode="constant", dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, x: backend.pad(x, pad_width, mode=mode),
+            array,
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
-    def concat(arr: list, axis: int, dtype = "fp16", device="cpu")-> Tensor:
-        for i, element in enumerate(arr):
-            if isinstance(element, Tensor):
-                arr[i] = element.data
-
-        backend = Tensor.define_backend(device)
-        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
-        return Tensor(backend.concatenate(arr, axis = axis, dtype = backend_dtype), dtype, device)
-    
-    @staticmethod
-    def stack(arr: list, axis: int, dtype = "fp16", device="cpu")-> Tensor:
-        for i, element in enumerate(arr):
-            if isinstance(element, Tensor):
-                arr[i] = element.data
-
-        backend = Tensor.define_backend(device)
-        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
-        return Tensor(backend.stack(arr, axis = axis, dtype = backend_dtype), dtype, device)
+    def concat(arr: list, axis: int = 0, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, *xs: backend.concatenate(xs, axis=axis),
+            *arr,
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
-    def zeros(shape, dtype = "fp16", device = "cpu")-> Tensor:
-        backend = Tensor.define_backend(device)
-        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
-        return Tensor(backend.zeros(shape, dtype = backend_dtype), dtype, device)
-    
-    @staticmethod
-    def ones(shape, dtype = "fp16", device = "cpu")-> Tensor:
-        backend = Tensor.define_backend(device)
-        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
-        return Tensor(backend.ones(shape, dtype = backend_dtype), dtype, device)
-    
-    @staticmethod
-    def eye(
-        n: int, 
-        m: int = None, 
-        dtype = "fp16", 
-        device: str = "cpu"
-    )-> Tensor:
-        backend = Tensor.define_backend(device)
-        backend_dtype = Tensor.get_backend_dtype(backend, dtype)
-        return Tensor(backend.eye(n, m, dtype = backend_dtype), dtype, device)
+    def stack(arr: list, axis: int = 0, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, *xs: backend.stack(xs, axis=axis),
+            *arr,
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
-    def diag(array, dtype = "fp16", device="cpu"):
-        if isinstance(array, Tensor):
-            array = array.data
-
-        backend = Tensor.define_backend(device) 
-        return Tensor(backend.diag(array), dtype, device)
-
-    @staticmethod
-    def where(
-        condition, 
-        x, 
-        y,
-        dtype = "fp16", 
-        device: str = "cpu"        
-    )-> Tensor:
-        if isinstance(condition, Tensor):
-            condition = condition.data
-        if isinstance(x, Tensor):
-            x = x.data
-        if isinstance(y, Tensor):
-            y = y.data
-
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.where(condition, x, y), dtype, device)
+    def zeros(shape, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.zeros(shape, dtype=dt),
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
-    def maximum(
-        x1, 
-        x2,
-        dtype = "fp16", 
-        device: str = "cpu"          
-    )-> Tensor:
-        if isinstance(x1, Tensor):
-            x1 = x1.data
-        if isinstance(x2, Tensor):
-            x2 = x2.data
+    def ones(shape, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.ones(shape, dtype=dt),
+            dtype=dtype,
+            device=device,
+        )
 
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.maximum(x1, x2), dtype, device)
-    
     @staticmethod
-    def minimum(
-        x1, 
-        x2,
-        dtype = "fp16", 
-        device: str = "cpu"          
-    )-> Tensor:
-        if isinstance(x1, Tensor):
-            x1 = x1.data
-        if isinstance(x2, Tensor):
-            x2 = x2.data
+    def eye(n: int, m: int | None = None, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.eye(n, m, dtype=dt),
+            dtype=dtype,
+            device=device,
+        )
 
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.minimum(x1, x2), dtype, device)
+    @staticmethod
+    def diag(array, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, x: backend.diag(x),
+            array,
+            dtype=dtype,
+            device=device,
+        )
+
+    @staticmethod
+    def where(condition, x, y, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, c, a, b: backend.where(c, a, b),
+            condition,
+            x,
+            y,
+            dtype=dtype,
+            device=device,
+        )
+
+    @staticmethod
+    def maximum(x1, x2, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, a, b: backend.maximum(a, b),
+            x1,
+            x2,
+            dtype=dtype,
+            device=device,
+        )
+
+    @staticmethod
+    def minimum(x1, x2, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, _, a, b: backend.minimum(a, b),
+            x1,
+            x2,
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
     def random_uniform(
-        low: float = 0.0, 
-        high: float = 1.0, 
+        low: float = 0.0,
+        high: float = 1.0,
         size: tuple = (2, 2),
-        dtype = "fp16",
-        device: str = "cpu"
-    )-> Tensor:
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.random.uniform(low, high, size = size), dtype, device)
+        dtype="fp16",
+        device="cpu",
+    ) -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.random.uniform(low, high, size).astype(dt),
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
     def random_normal(
-        mean: float = 0.0, 
-        std: float = 1.0, 
-        size: tuple = (2, 2), 
-        dtype = "fp16", 
-        device: str = "cpu"
-    )-> Tensor:
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.random.normal(mean, std, size = size), dtype, device)
+        mean: float = 0.0,
+        std: float = 1.0,
+        size: tuple = (2, 2),
+        dtype="fp16",
+        device="cpu",
+    ) -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.random.normal(mean, std, size).astype(dt),
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
-    def rand(
-        shape: tuple,
-        dtype = "fp16", 
-        device: str = "cpu"
-    )-> Tensor:
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.random.rand(*shape), dtype, device)
+    def rand(shape: tuple, dtype="fp16", device="cpu") -> Tensor:
+        return Tensor._static_op(
+            lambda backend, dt: backend.random.rand(*shape).astype(dt),
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
     def arange(
-        start: float, 
-        stop: float = None, 
-        step: float = 1, 
-        dtype: str = "fp32", 
-        device: str = "cpu"
+        start: float,
+        stop: float | None = None,
+        step: float = 1,
+        dtype="fp32",
+        device="cpu",
     ) -> Tensor:
-        # set stop if needed
         if stop is None:
-            stop = start
-            start = 0
+            start, stop = 0, start
 
-        backend = Tensor.define_backend(device)
-        return Tensor(backend.arange(start, stop, step), dtype=dtype, device=device)
+        return Tensor._static_op(
+            lambda backend, dt: backend.arange(start, stop, step, dtype=dt),
+            dtype=dtype,
+            device=device,
+        )
 
     @staticmethod
     def einsum(
         subscripts: str,
-        *operands: Tensor,
-        dtype: str = "fp32", 
-        device: str = "cpu"
+        *operands,
+        dtype="fp32",
+        device="cpu",
     ) -> Tensor:
-        backend = Tensor.define_backend(device)
-        arrays = [op.data for op in operands]
-        return Tensor(backend.einsum(subscripts, *arrays), dtype, device)
+        return Tensor._static_op(
+            lambda backend, _, *xs: backend.einsum(subscripts, *xs),
+            *operands,
+            dtype=dtype,
+            device=device,
+        )
 
     # ---------------------
     # Data type conversion methods
@@ -538,24 +641,18 @@ class Tensor:
 
     def to_numpy(self):
         if self.backend.__name__ == "cupy":
-            return self.data.get()
-        elif self.backend.__name__ == "numpy":
-            return self.data
+            return self._data.get()
+        else:
+            return self._data
 
-    def astype(self, dtype = "fp16"):
+    def astype(self, dtype="fp16") -> Tensor:
         backend_dtype = Tensor.get_backend_dtype(self.backend, dtype)
-        self._dtype = dtype
-        if self.backend.__name__ == "cupy":
-            with self.device_context():
-                self._data = self.backend.asarray(self.data, dtype = backend_dtype)
-        elif self.backend.__name__ == "numpy":
-            self._data = self.backend.array(self.data, dtype = backend_dtype)
-
-        return self
+        out = self._run_on_device(lambda: self._data.astype(backend_dtype, copy=False))
+        return Tensor(out, dtype=dtype, device=self.device)
 
     # ---------------------
-    # Representation methods
+    # Representation
     # ---------------------
 
     def __repr__(self):
-        return f"Tensor({self.data}, device={self.device})"
+        return f"Tensor({self.data}, device={self.device}, dtype={self.dtype})"
