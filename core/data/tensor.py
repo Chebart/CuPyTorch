@@ -9,11 +9,15 @@ class Tensor:
     Custom data class, supporting automatic backend selection (NumPy/CuPy)
     and seamless CPU/GPU device tracking.
     """
+    _initialized_cuda_devices = set()
 
     def __init__(self, data, dtype: str = "fp32", device: str = "cpu"):
         self._backend = Tensor.define_backend(device)
         self._dtype = dtype
         self._device = device
+
+        # Init device if needed
+        Tensor.init_device(device)
 
         # create array on the correct device
         backend_dtype = Tensor.get_backend_dtype(self.backend, dtype)
@@ -24,6 +28,10 @@ class Tensor:
 
         # store strides lazily from data
         self._strides = self.data.strides
+
+    # ---------------------
+    # Properties
+    # ---------------------
 
     @property
     def backend(self):
@@ -115,12 +123,26 @@ class Tensor:
         return dtype1 if r1 >= r2 else dtype2
 
     # ---------------------
-    # Properties
-    # ---------------------
-
-    # ---------------------
     # Device methods
     # ---------------------
+
+    @staticmethod
+    def init_device(device: str):
+        # Check backend
+        backend = Tensor.define_backend(device)
+        if backend.__name__ != "cupy":
+            return
+
+        # Check device was already initialized
+        dev_id = Tensor.device_id(device)
+        if dev_id in Tensor._initialized_cuda_devices:
+            return
+
+        # Init device
+        rt = backend.cuda.runtime
+        rt.setDevice(dev_id)
+        rt.free(0)
+        Tensor._initialized_cuda_devices.add(dev_id)
 
     @staticmethod
     def device_id(device: str) -> int | None:
@@ -135,6 +157,9 @@ class Tensor:
         # If already on the correct device, do nothing
         if self.device == device:
             return self
+
+        # Init device if needed
+        Tensor.init_device(device)
 
         self._device = device
         new_backend = self.define_backend(device)
@@ -258,6 +283,10 @@ class Tensor:
         dtype="fp16",
         device="cpu",
     ) -> Tensor:
+        
+        # Init device if needed
+        Tensor.init_device(device)
+
         backend = Tensor.define_backend(device)
         backend_dtype = Tensor.get_backend_dtype(backend, dtype)
 
