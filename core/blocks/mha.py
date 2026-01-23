@@ -53,7 +53,7 @@ class MultiHeadAttention(AbstractBlock):
         scores = Q @ K.transpose(0, 1, 3, 2) / (self.d_k ** 0.5)
 
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
+            scores = scores.masked_fill(mask, -1e9)
 
         # Get attention probabilities
         probs = self.softmax(scores)
