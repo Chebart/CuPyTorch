@@ -23,7 +23,10 @@ class Linear(AbstractBlock):
         
     def forward(self, x):
         self.x = x
-        return self.x @ self._w.T + self._b
+        if self._bias:
+            return self.x @ self._w.T + self._b
+        else:
+            return self.x @ self._w.T
     
     def parameters(self):
         if self._bias:
@@ -32,7 +35,8 @@ class Linear(AbstractBlock):
             return [('w', self._w, self._dw)]
         
     def backward(self, dLdy: Tensor):
-        self._db += dLdy.sum(axis = tuple(range(dLdy.data.ndim - 1)))
+        if self._bias:
+            self._db += dLdy.sum(axis = tuple(range(dLdy.data.ndim - 1)))
         if dLdy.data.ndim == 2:
             self._dw += dLdy.T @ self.x
             dLdx = dLdy @ self._w
