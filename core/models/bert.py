@@ -63,7 +63,7 @@ class MLMHead(AbstractModel):
         self.fc1 = Linear(d_model, d_model)
         self.gelu = GELU()
         self.ln = LayerNorm(d_model)
-        self.fc2 = Linear(d_model, vocab_size)
+        self.fc2 = Linear(d_model, vocab_size, bias = False)
 
     def forward(self, x):
         return self.fc2(self.ln(self.gelu(self.fc1(x))))
@@ -124,6 +124,7 @@ class BERT(AbstractModel):
         dropout: float = 0.1
     ):
         self.task = None
+        self.freeze = False
 
         self.layers = [
             BertEmbeddings(vocab_size, max_seq_length, d_model, dropout),
@@ -168,12 +169,11 @@ class BERT(AbstractModel):
         if self.task == "mlm":
             dLdy = self.mlm_head.backward(dLdy)
         elif self.task == "classification":
-            # for classification, do not train the full model.
             dLdy = self.classifier.backward(dLdy)
-            return
 
-        for _, layer in enumerate(reversed(self.layers)):
-            dLdy = layer.backward(dLdy)    
+        if not self.freeze:
+            for _, layer in enumerate(reversed(self.layers)):
+                dLdy = layer.backward(dLdy)    
 
     def parameters(self):
         params = self.mlm_head.parameters() + self.classifier.parameters()
@@ -190,6 +190,12 @@ class BERT(AbstractModel):
 
         return self
     
+    def freeze_layers(self):
+        self.freeze = True
+
+    def unfreeze_layers(self):
+        self.freeze = False
+
     # ----------------------
     # this methods works only for layers that use dropout
     # ----------------------
