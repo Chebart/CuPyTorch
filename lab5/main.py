@@ -458,11 +458,18 @@ def start_train_test_pipeline(
     # set task for model
     model.set_task(task_name = task)
     logging.info(f"{task} task:")
+    # initially freeze all model layers except the final classification head.
+    if task == "classification":
+        model.freeze_layers()
 
     train_hist = {}
     test_hist = {}
     for epoch in range(epochs):
         logging.info(f"Epoch {epoch + 1}/{epochs}")
+
+        # unfreeze the entire network after the first third of training.
+        if task == "classification" and (epochs / (epoch + 1)) <= 3:
+            model.unfreeze_layers()
 
         # train
         model.train()
@@ -552,27 +559,25 @@ if __name__ == "__main__":
     SEED = 42
     random.seed(SEED)
     np.random.seed(SEED)
-    TOKENIZER_NAME = "cointegrated/rubert-tiny2"
+    TOKENIZER_NAME = "cointegrated/rubert-tiny"
     MODEL_NAME = "cointegrated/rubert-tiny2"
-    N_ROWS = 2.0 * 1e5
+    N_ROWS = 1.0 * 1e6
     MLM_PROB = 0.15
     IGNORE_INDEX = -100
     TEST_SIZE = 0.2
     TEST_STEP = 4
     DROPOUT = 0.1
-    PRETRAIN_EPOCHS = 24
+    PRETRAIN_EPOCHS = 16
     FINETUNE_EPOCHS = 6
-    BATCH_SIZE = 12
+    BATCH_SIZE = 128
+    MAX_SEQ_LENGTH = 128
     LR = 1e-4
-    DEVICE = "cuda:0"
+    DEVICE = "cuda:1"
     DTYPE = "fp32"
 
     # Load HF models
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, clean_up_tokenization_spaces = False)
     config = AutoConfig.from_pretrained(MODEL_NAME)
-
-    # Set maximum seq_length
-    MAX_SEQ_LENGTH = tokenizer.model_max_length // 4
 
     # init parts
     model = BERT(
@@ -587,7 +592,7 @@ if __name__ == "__main__":
     )
     model = model.to_device(DEVICE)
     loss_fn = CrossEntropyLoss(model = model, ignore_index = IGNORE_INDEX)
-    optimizer = Adam(model = model, lr = LR, reg_type = "l2")
+    optimizer = Adam(model = model, lr = LR)
 
     # Pretrain BERT
     X_train, X_test, y_train, y_test = split_pretrain_data(
@@ -619,7 +624,9 @@ if __name__ == "__main__":
     )
 
     # Finetune BERT
+    LR = 1e-4
     TEST_STEP = 2
+    optimizer = Adam(model = model, lr = LR)
     X_train, X_test, y_train, y_test = split_finetune_data(
         data_path = ft_dataset_path,
         tokenizer = tokenizer,
