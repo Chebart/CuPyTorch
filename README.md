@@ -34,6 +34,7 @@ ucimlrepo==0.0.7
 scikit-learn==1.7.2
 python-dotenv==1.0.1
 kaggle==1.8.3
+pymatgen==2024.5.1
 
 # Rulm dependencies
 scipy==1.12.0
